@@ -455,7 +455,7 @@ ${imgInstruction}
                         <span style={{...S.tabDot, background:v.dot}}/>{v.label}{k===it.category && " ✓"}
                       </div>
                     ))}
-                    <div style={S.menuDel} onClick={()=>removeItem(it.id)}>削除する</div>
+                    <div style={S.menuDel} onClick={()=>removeItem(it.id)}>🗑 削除する</div>
                   </div>
                 )}
               </div>
@@ -653,10 +653,10 @@ const S = {
   cardTitle: { fontSize:13, fontWeight:700, color:"#1a1a24", lineHeight:1.45, marginBottom:5 },
   cardMeta: { fontSize:10.5, color:"#9a9aaa" },
   cardChip: { display:"inline-block", marginTop:9, padding:"5px 11px", borderRadius:100, fontSize:11, fontWeight:600 },
-  menu: { position:"absolute", inset:0, background:"rgba(255,255,255,0.96)", backdropFilter:"blur(10px)", padding:12, display:"flex", flexDirection:"column", gap:2, justifyContent:"center" },
+  menu: { position:"absolute", inset:0, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:10, display:"flex", flexDirection:"column", gap:2, justifyContent:"center" },
   menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
-  menuItem: { display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
-  menuDel: { marginTop:6, padding:"6px 10px", borderRadius:10, fontSize:11, fontWeight:600, color:"#f0436c", textAlign:"center", cursor:"pointer", background:"rgba(255,94,138,0.08)" },
+  menuItem: { display:"flex", alignItems:"center", gap:8, padding:"9px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
+  menuDel: { marginTop:8, padding:"13px 10px", borderRadius:12, fontSize:14, fontWeight:800, color:"#fff", textAlign:"center", cursor:"pointer", background:"linear-gradient(120deg,#ff5e8a,#ff8f6b)", boxShadow:"0 4px 12px rgba(255,94,138,0.35)" },
   dock: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", padding:"16px 24px 30px", background:"linear-gradient(to top,rgba(246,246,248,0.96) 55%,transparent)" },
   drop: { height:56, borderRadius:19, background:"linear-gradient(120deg,#16161e,#34344a)", display:"flex", alignItems:"center", justifyContent:"center", gap:9, cursor:"pointer", boxShadow:"0 12px 32px rgba(30,30,50,0.35)" },
   dropPlus: { fontSize:20, fontWeight:300, color:"#fff" }, dropTxt:{ fontSize:15, fontWeight:700, color:"#fff" },
