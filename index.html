@@ -284,6 +284,8 @@ ${imgInstruction}
         || (img ? `https://www.google.com/search?q=${encodeURIComponent(parsed.title)}` : null);
       parsed.searchLabel = img && !sourceUrl ? "Googleで調べる" : null;
       if (img) parsed._img = img;
+      // URL先のサムネ画像(og:image)をカード表示用に保持
+      parsed.image = (urlMeta && urlMeta.image) ? urlMeta.image : "";
       setResult(parsed);
     } catch (e) {
       setError("解析できませんでした。通信かキーを確認して、もう一度試してください。");
@@ -424,11 +426,12 @@ ${imgInstruction}
         <div style={S.wall}>
           {visible.map((it)=>{
             const c = CATS[it.category];
+            const heroImg = it._img || it.image;
             return (
               <div key={it.id} style={S.card} onClick={()=>setMenuId(menuId===it.id?null:it.id)}>
                 <div style={{...S.hero, background:c.grad, ...(it._img&&it.sourceUrl?{cursor:"pointer"}:{})}}
                   onClick={e => { if(it._img && it.sourceUrl){ handleImageSearch(e,it); } }}>
-                  {it._img && <img src={it._img} alt="" style={S.cardHeroImg} />}
+                  {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
                   <span style={S.heroGlow}/>
                   <span style={S.cardCat}>{c.en}</span>
                   {it._img && it.sourceUrl && scanning !== it.id && (
@@ -455,8 +458,8 @@ ${imgInstruction}
                       {it.searchLabel ? `🔍 ${it.searchLabel}` : "🔗 開く"}
                     </a>
                   )}
-                  {it._img && (
-                    <div style={S.cardImgBtn} onClick={e=>{e.stopPropagation();setLightbox(it._img);}}>
+                  {(it._img || it.image) && (
+                    <div style={S.cardImgBtn} onClick={e=>{e.stopPropagation();setLightbox(it._img || it.image);}}>
                       🔍 画像
                     </div>
                   )}
@@ -540,7 +543,7 @@ ${imgInstruction}
                   <div style={S.sheetTitle}>AIが読み取りました</div>
                   <div style={S.preview}>
                     <div style={{...S.previewHero, background:CATS[result.category].grad}}>
-                      {result._img && <img src={result._img} alt="" style={S.previewImg} />}
+                      {(result._img || result.image) && <img src={result._img || result.image} alt="" style={S.previewImg} onError={e=>{e.target.style.display='none';}} />}
                       <span style={S.cardCat}>{CATS[result.category].en}</span>
                     </div>
                     <div style={{padding:"14px 16px 16px"}}>
