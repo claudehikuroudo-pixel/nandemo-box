@@ -428,7 +428,8 @@ ${imgInstruction}
             const c = CATS[it.category];
             const heroImg = it._img || it.image;
             return (
-              <div key={it.id} style={S.card} onClick={()=>setMenuId(menuId===it.id?null:it.id)}>
+              <div key={it.id} style={S.card}>
+                <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
                 <div style={{...S.hero, background:c.grad, ...(it._img&&it.sourceUrl?{cursor:"pointer"}:{})}}
                   onClick={e => { if(it._img && it.sourceUrl){ handleImageSearch(e,it); } }}>
                   {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
@@ -466,13 +467,14 @@ ${imgInstruction}
                 </div>
                 {menuId===it.id && (
                   <div style={S.menu} onClick={e=>e.stopPropagation()}>
+                    <div style={S.menuClose} onClick={()=>setMenuId(null)}>✕</div>
                     <div style={S.menuHint}>分類を変える</div>
                     {Object.entries(CATS).map(([k,v])=>(
                       <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
                         <span style={{...S.tabDot, background:v.dot}}/>{v.label}{k===it.category && " ✓"}
                       </div>
                     ))}
-                    <div style={S.menuDel} onClick={()=>removeItem(it.id)}>🗑 削除する</div>
+                    <div style={S.menuDel} onClick={()=>{ if(window.confirm('このカードを削除しますか？')) removeItem(it.id); }}>🗑 削除する</div>
                   </div>
                 )}
               </div>
@@ -661,8 +663,10 @@ const S = {
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
   tabDot: { width:7, height:7, borderRadius:"50%", flexShrink:0 }, tabLbl:{ fontSize:12, fontWeight:600, color:"#6a6a7a" },
-  wall: { padding:"2px 18px 150px", columns:2, columnGap:12 },
-  card: { breakInside:"avoid", marginBottom:12, borderRadius:22, background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", cursor:"pointer", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
+  wall: { padding:"2px 18px 150px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, alignItems:"start" },
+  card: { borderRadius:22, background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
+  cardMenuBtn: { position:"absolute", top:8, right:8, zIndex:5, width:28, height:28, borderRadius:14, background:"rgba(0,0,0,0.3)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:700, cursor:"pointer", lineHeight:1, backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)" },
+  menuClose: { position:"absolute", top:6, right:9, fontSize:13, fontWeight:700, color:"#aaa", cursor:"pointer", padding:4, lineHeight:1 },
   hero: { height:84, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:13 },
   heroGlow: { position:"absolute", top:-30, right:-20, width:80, height:80, borderRadius:"50%", background:"radial-gradient(circle,rgba(255,255,255,0.5),transparent 70%)" },
   cardCat: { position:"absolute", top:13, left:14, fontSize:8.5, fontWeight:800, letterSpacing:"0.18em", color:"rgba(255,255,255,0.95)", textTransform:"uppercase" },
@@ -670,7 +674,7 @@ const S = {
   cardTitle: { fontSize:13, fontWeight:700, color:"#1a1a24", lineHeight:1.45, marginBottom:5 },
   cardMeta: { fontSize:10.5, color:"#9a9aaa" },
   cardChip: { display:"inline-block", marginTop:9, padding:"5px 11px", borderRadius:100, fontSize:11, fontWeight:600 },
-  menu: { position:"absolute", inset:0, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:10, display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
+  menu: { position:"absolute", inset:0, zIndex:10, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:"10px 10px 10px", display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
   menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
   menuItem: { display:"flex", alignItems:"center", gap:8, padding:"9px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
   menuDel: { marginTop:8, padding:"13px 10px", borderRadius:12, fontSize:14, fontWeight:800, color:"#fff", textAlign:"center", cursor:"pointer", background:"linear-gradient(120deg,#ff5e8a,#ff8f6b)", boxShadow:"0 4px 12px rgba(255,94,138,0.35)" },
