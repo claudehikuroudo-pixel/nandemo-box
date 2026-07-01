@@ -68,8 +68,9 @@ const CATS = {
   event: { label: "予定", en: "Event", grad: "linear-gradient(145deg,#ff6b9d,#ff8f6b)", chip: "rgba(255,94,138,0.13)", chipC: "#f0436c", dot: "#ff5e8a" },
   task:  { label: "タスク", en: "Task", grad: "linear-gradient(145deg,#a06bff,#6b8bff)", chip: "rgba(155,107,255,0.13)", chipC: "#8b54f5", dot: "#9b6bff" },
   mono:  { label: "モノ", en: "Want", grad: "linear-gradient(145deg,#ffc247,#ff9a3d)", chip: "rgba(255,182,39,0.16)", chipC: "#d18908", dot: "#ffb627" },
-  basho: { label: "場所", en: "Place", grad: "linear-gradient(145deg,#3fe08a,#1fc8b0)", chip: "rgba(47,216,122,0.14)", chipC: "#1aa85c", dot: "#2fd87a" },
+  basho: { label: "行ってみたい", en: "Place", grad: "linear-gradient(145deg,#3fe08a,#1fc8b0)", chip: "rgba(47,216,122,0.14)", chipC: "#1aa85c", dot: "#2fd87a" },
   joho:  { label: "情報", en: "Info", grad: "linear-gradient(145deg,#47bfff,#6b9aff)", chip: "rgba(55,182,255,0.14)", chipC: "#1690d8", dot: "#37b6ff" },
+  recipe:{ label: "レシピ", en: "Recipe", grad: "linear-gradient(145deg,#ff9068,#ff5e62)", chip: "rgba(255,94,98,0.14)", chipC: "#e0483f", dot: "#ff6b5c" },
 };
 
 // ── 初期サンプル（初回だけ表示。一度使い始めると保存内容に置き換わる）──
@@ -240,13 +241,14 @@ function App() {
 - event: 日時のあるイベント・ウェビナー・講座・セミナー・配信
 - task: やること・締切のある作業
 - mono: 欲しいもの（商品・ガジェット・服・時計など）
-- basho: 行きたい場所・店・スポット
+- recipe: レシピ・料理・作りたい献立・料理動画（クラシル/クックパッド/DELISH KITCHEN等）
+- basho: 行ってみたい場所・店・スポット
 - joho: あとで読む記事・動画・情報・メモ
 
 ${imgInstruction}
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"event|task|mono|basho|joho","title":"30字以内・具体的なブランド名や店名を含む","meta":"補足(場所/価格/媒体など)","chip":"価格or日時or状態の短いラベル","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","confidence":0.0〜1.0}`;
+{"category":"event|task|mono|recipe|basho|joho","title":"30字以内・具体的なブランド名や店名を含む","meta":"補足(場所/価格/媒体など)","chip":"価格or日時or状態の短いラベル","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","confidence":0.0〜1.0}`;
 
       const content = [];
       if (img) {
@@ -414,7 +416,7 @@ ${imgInstruction}
 
         <div style={S.boxHead}>気になる箱</div>
         <div style={S.tabs}>
-          {[["all","すべて","#16161e"],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["basho","場所",CATS.basho.dot],["joho","情報",CATS.joho.dot],["event","予定",CATS.event.dot]].map(([c,l,col])=>(
+          {[["all","すべて","#16161e"],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["event","予定",CATS.event.dot]].map(([c,l,col])=>(
             <div key={c} onClick={()=>setFilter(c)}
               style={{...S.tab, ...(filter===c?{...S.tabOn, background: c==="all"?"linear-gradient(120deg,#16161e,#3a3a4e)":CATS[c]?CATS[c].grad:"#16161e"}:{})}}>
               <span style={{...S.tabDot, background: filter===c?"#fff":col}}/>
