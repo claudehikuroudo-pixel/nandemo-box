@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>なんでも箱</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Inter:wght@400;500;600;700;800;900&display=swap');
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  background:
+    radial-gradient(circle at 20% 10%, #ffe8f0 0%, transparent 45%),
+    radial-gradient(circle at 85% 25%, #e8f0ff 0%, transparent 50%),
+    radial-gradient(circle at 50% 90%, #fff0e0 0%, transparent 45%),
+    #f5f5f7;
+  display:flex; justify-content:center; align-items:flex-start;
+  min-height:100vh; padding:32px 16px;
+  font-family:'Inter','Zen Kaku Gothic New',-apple-system,sans-serif;
+}
+
+.phone {
+  width:380px; height:824px; border-radius:54px; overflow:hidden; position:relative;
+  background:
+    radial-gradient(circle at 25% 5%, rgba(255,180,210,0.32) 0%, transparent 36%),
+    radial-gradient(circle at 90% 14%, rgba(150,190,255,0.30) 0%, transparent 40%),
+    radial-gradient(circle at 50% 97%, rgba(255,200,140,0.26) 0%, transparent 40%),
+    #f6f6f8;
+  box-shadow:0 50px 130px rgba(80,80,120,0.35), inset 0 0 0 1px rgba(255,255,255,0.6);
+  border:1px solid rgba(255,255,255,0.5);
+}
+
+.sb { height:50px; display:flex; align-items:center; justify-content:space-between; padding:0 30px; }
+.sb-t { font-size:15px; font-weight:600; color:#1a1a2e; }
+.sb-i { font-size:11px; color:#1a1a2e; letter-spacing:1px; }
+
+.hd { padding:6px 26px 12px; display:flex; align-items:flex-end; justify-content:space-between; }
+.hd-name { font-size:26px; font-weight:900; color:#16161e; letter-spacing:-0.04em; }
+.hd-name .accent { background:linear-gradient(120deg,#ff6b9d,#a06bff,#56c4ff); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+.hd-month { font-size:14px; font-weight:700; color:#16161e; font-variant-numeric:tabular-nums; }
+.hd-month span { color:#a0a0b0; font-weight:600; font-size:12px; margin-left:4px; }
+
+/* ═══ 週カレンダー（常時表示）═══ */
+.cal {
+  margin:0 18px 6px; padding:14px 12px 12px;
+  border-radius:24px;
+  background:rgba(255,255,255,0.7);
+  backdrop-filter:blur(28px); -webkit-backdrop-filter:blur(28px);
+  border:1px solid rgba(255,255,255,0.9);
+  box-shadow:0 8px 26px rgba(100,100,150,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+.cal-week { display:flex; justify-content:space-between; }
+.day {
+  flex:1; display:flex; flex-direction:column; align-items:center; gap:7px;
+  padding:6px 0 8px; border-radius:16px; cursor:pointer; position:relative;
+  transition:background 0.2s;
+}
+.day-name { font-size:10px; font-weight:600; color:#b0b0be; letter-spacing:0.03em; }
+.day-num { font-size:15px; font-weight:700; color:#3a3a48; font-variant-numeric:tabular-nums; }
+.day.sun .day-name, .day.sun .day-num { color:#ff8a9a; }
+.day.sat .day-name, .day.sat .day-num { color:#8aa8ff; }
+/* 予定ドット */
+.day-dots { display:flex; gap:3px; height:5px; }
+.dot { width:5px; height:5px; border-radius:50%; }
+.d-event { background:#ff5e8a; }
+.d-task { background:#9b6bff; }
+.d-mono { background:#ffb627; }
+/* 今日 */
+.day.today { background:linear-gradient(135deg,#16161e,#34344a); }
+.day.today .day-name { color:rgba(255,255,255,0.6); }
+.day.today .day-num { color:#fff; }
+.day.today.sun .day-name, .day.today.sun .day-num,
+.day.today.sat .day-name, .day.today.sat .day-num { color:#fff; }
+/* 選択 */
+.day.sel:not(.today) { background:rgba(160,107,255,0.1); }
+
+/* 選択日の予定（小さく） */
+.cal-events { margin-top:11px; padding-top:11px; border-top:1px solid rgba(0,0,0,0.05); display:flex; flex-direction:column; gap:7px; }
+.cal-ev { display:flex; align-items:center; gap:10px; }
+.cal-ev-time { font-size:11px; font-weight:700; color:#6a6a7a; font-variant-numeric:tabular-nums; width:42px; flex-shrink:0; }
+.cal-ev-bar { width:3px; height:26px; border-radius:2px; flex-shrink:0; }
+.cb-event { background:linear-gradient(180deg,#ff5e8a,#ff8a6b); }
+.cb-task { background:linear-gradient(180deg,#9b6bff,#6b8bff); }
+.cal-ev-body { flex:1; }
+.cal-ev-title { font-size:12.5px; font-weight:600; color:#1a1a24; line-height:1.3; }
+.cal-ev-meta { font-size:10px; color:#a0a0b0; margin-top:1px; }
+
+/* ═══ 箱セクション ═══ */
+.box-head { display:flex; align-items:center; justify-content:space-between; padding:12px 26px 10px; }
+.box-label { font-size:12px; font-weight:800; letter-spacing:0.08em; color:#16161e; }
+.tabs { display:flex; gap:6px; padding:0 22px 12px; overflow-x:auto; scrollbar-width:none; }
+.tabs::-webkit-scrollbar { display:none; }
+.tab {
+  display:flex; align-items:center; gap:6px; padding:7px 12px; border-radius:100px;
+  background:rgba(255,255,255,0.65); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.8); box-shadow:0 2px 8px rgba(100,100,140,0.06);
+  cursor:pointer; white-space:nowrap; transition:all 0.3s cubic-bezier(0.34,1.45,0.5,1);
+}
+.tab-dot { width:7px; height:7px; border-radius:50%; }
+.tab-lbl { font-size:12px; font-weight:600; color:#6a6a7a; }
+.tab.on { transform:scale(1.04); }
+.tab.on .tab-lbl { color:#fff; }
+.tab.on .tab-dot { background:#fff !important; }
+.tab.on[data-c="all"]   { background:linear-gradient(120deg,#16161e,#3a3a4e); border-color:transparent; }
+.tab.on[data-c="mono"]  { background:linear-gradient(120deg,#ffb627,#ff8a3d); border-color:transparent; }
+.tab.on[data-c="task"]  { background:linear-gradient(120deg,#9b6bff,#6b8bff); border-color:transparent; }
+.tab.on[data-c="basho"] { background:linear-gradient(120deg,#2fd87a,#1fc0a0); border-color:transparent; }
+.tab.on[data-c="joho"]  { background:linear-gradient(120deg,#37b6ff,#5a8bff); border-color:transparent; }
+
+.wall { padding:2px 20px 130px; columns:2; column-gap:12px; overflow-y:auto; height:calc(100% - 430px); scrollbar-width:none; }
+.wall::-webkit-scrollbar { display:none; }
+.card {
+  break-inside:avoid; margin-bottom:12px; border-radius:22px;
+  background:rgba(255,255,255,0.72); backdrop-filter:blur(30px); -webkit-backdrop-filter:blur(30px);
+  border:1px solid rgba(255,255,255,0.9); overflow:hidden; cursor:pointer; position:relative;
+  box-shadow:0 8px 24px rgba(100,100,150,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
+  transition:transform 0.35s cubic-bezier(0.34,1.45,0.5,1);
+  animation:pop 0.5s cubic-bezier(0.34,1.5,0.5,1) backwards;
+}
+@keyframes pop { from{opacity:0;transform:translateY(-10px) scale(0.95)} to{opacity:1;transform:none} }
+.card:active { transform:scale(0.96); }
+.card.hide { display:none; }
+.card-hero { height:84px; position:relative; overflow:hidden; display:flex; align-items:flex-end; padding:13px; }
+.card-tall .card-hero { height:120px; }
+.hero-mono  { background:linear-gradient(145deg,#ffc247,#ff9a3d); }
+.hero-task  { background:linear-gradient(145deg,#a06bff,#6b8bff); }
+.hero-basho { background:linear-gradient(145deg,#3fe08a,#1fc8b0); }
+.hero-joho  { background:linear-gradient(145deg,#47bfff,#6b9aff); }
+.card-hero::before { content:''; position:absolute; top:-30px; right:-20px; width:80px; height:80px; border-radius:50%; background:radial-gradient(circle, rgba(255,255,255,0.5), transparent 70%); }
+.card-cat { position:absolute; top:13px; left:14px; font-size:8.5px; font-weight:800; letter-spacing:0.18em; color:rgba(255,255,255,0.95); text-transform:uppercase; }
+.card-num { font-size:11px; font-weight:800; color:rgba(255,255,255,0.9); font-variant-numeric:tabular-nums; }
+.card-body { padding:12px 14px 15px; }
+.card-title { font-size:13px; font-weight:700; color:#1a1a24; line-height:1.45; margin-bottom:5px; }
+.card-meta { font-size:10.5px; color:#9a9aaa; }
+.card-chip { display:inline-block; margin-top:9px; padding:5px 11px; border-radius:100px; font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+.chip-mono  { background:rgba(255,182,39,0.16); color:#d18908; }
+.chip-task  { background:rgba(155,107,255,0.13); color:#8b54f5; }
+.chip-basho { background:rgba(47,216,122,0.14); color:#1aa85c; }
+.chip-joho  { background:rgba(55,182,255,0.14); color:#1690d8; }
+
+.dock { position:absolute; bottom:0; left:0; right:0; padding:16px 26px 30px; background:linear-gradient(to top, rgba(246,246,248,0.96) 55%, transparent); }
+.drop { height:56px; border-radius:19px; background:linear-gradient(120deg,#16161e,#34344a); display:flex; align-items:center; justify-content:center; gap:9px; cursor:pointer; transition:transform 0.15s; box-shadow:0 12px 32px rgba(30,30,50,0.35), inset 0 1px 0 rgba(255,255,255,0.15); }
+.drop:active { transform:scale(0.98); }
+.drop-plus { font-size:20px; font-weight:300; color:#fff; }
+.drop-txt { font-size:15px; font-weight:700; color:#fff; letter-spacing:0.02em; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="sb"><span class="sb-t">9:41</span><span class="sb-i">●●● ⛁</span></div>
+  <div class="hd">
+    <div class="hd-name">なんでも<span class="accent">箱</span></div>
+    <div class="hd-month">6月 <span>2026</span></div>
+  </div>
+
+  <!-- 週カレンダー -->
+  <div class="cal">
+    <div class="cal-week">
+      <div class="day sun"><span class="day-name">日</span><span class="day-num">15</span><span class="day-dots"></span></div>
+      <div class="day"><span class="day-name">月</span><span class="day-num">16</span><span class="day-dots"><span class="dot d-task"></span></span></div>
+      <div class="day today sel"><span class="day-name">火</span><span class="day-num">17</span><span class="day-dots"><span class="dot" style="background:#fff"></span><span class="dot" style="background:rgba(255,255,255,0.6)"></span></span></div>
+      <div class="day"><span class="day-name">水</span><span class="day-num">18</span><span class="day-dots"></span></div>
+      <div class="day"><span class="day-name">木</span><span class="day-num">19</span><span class="day-dots"><span class="dot d-mono"></span></span></div>
+      <div class="day"><span class="day-name">金</span><span class="day-num">20</span><span class="day-dots"></span></div>
+      <div class="day sat"><span class="day-name">土</span><span class="day-num">21</span><span class="day-dots"><span class="dot d-event"></span></span></div>
+    </div>
+    <!-- 選択日（今日）の予定 -->
+    <div class="cal-events">
+      <div class="cal-ev">
+        <span class="cal-ev-time">19:00</span>
+        <span class="cal-ev-bar cb-event"></span>
+        <div class="cal-ev-body"><div class="cal-ev-title">AIゼミ・最前線</div><div class="cal-ev-meta">SHIFT AI · オンライン</div></div>
+      </div>
+      <div class="cal-ev">
+        <span class="cal-ev-time">20:00</span>
+        <span class="cal-ev-bar cb-task"></span>
+        <div class="cal-ev-body"><div class="cal-ev-title">スライド作成AIゼミ</div><div class="cal-ev-meta">オンライン</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 箱 -->
+  <div class="box-head"><div class="box-label">気になる箱</div></div>
+  <div class="tabs">
+    <div class="tab on" data-c="all" onclick="f(this,'all')"><span class="tab-dot" style="background:#16161e"></span><span class="tab-lbl">すべて</span></div>
+    <div class="tab" data-c="task" onclick="f(this,'task')"><span class="tab-dot" style="background:#9b6bff"></span><span class="tab-lbl">タスク</span></div>
+    <div class="tab" data-c="mono" onclick="f(this,'mono')"><span class="tab-dot" style="background:#ffb627"></span><span class="tab-lbl">モノ</span></div>
+    <div class="tab" data-c="basho" onclick="f(this,'basho')"><span class="tab-dot" style="background:#2fd87a"></span><span class="tab-lbl">場所</span></div>
+    <div class="tab" data-c="joho" onclick="f(this,'joho')"><span class="tab-dot" style="background:#37b6ff"></span><span class="tab-lbl">情報</span></div>
+  </div>
+  <div class="wall" id="wall">
+    <div class="card" data-c="mono" style="animation-delay:.03s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">01</span></div><div class="card-body"><div class="card-title">G-SHOCK GW-B5600</div><span class="card-chip chip-mono">¥28,600</span></div></div>
+    <div class="card" data-c="task" style="animation-delay:.06s"><div class="card-hero hero-task"><span class="card-cat">Task</span><span class="card-num">02</span></div><div class="card-body"><div class="card-title">請求書をLIMUに送る</div><span class="card-chip chip-task">今週中</span></div></div>
+    <div class="card card-tall" data-c="basho" style="animation-delay:.09s"><div class="card-hero hero-basho"><span class="card-cat">Place</span><span class="card-num">03</span></div><div class="card-body"><div class="card-title">渋谷の角打ちバー</div><div class="card-meta">道玄坂・徒歩5分</div><span class="card-chip chip-basho">行きたい</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.12s"><div class="card-hero hero-joho"><span class="card-cat">Info</span><span class="card-num">04</span></div><div class="card-body"><div class="card-title">Claude Code 活用術</div><div class="card-meta">note記事</div></div></div>
+    <div class="card card-tall" data-c="mono" style="animation-delay:.15s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">05</span></div><div class="card-body"><div class="card-title">Adidas Samba OG</div><div class="card-meta">スニーカー</div><span class="card-chip chip-mono">セール待ち</span></div></div>
+    <div class="card" data-c="basho" style="animation-delay:.18s"><div class="card-hero hero-basho"><span class="card-cat">Place</span><span class="card-num">06</span></div><div class="card-body"><div class="card-title">屋久島・縄文杉</div><span class="card-chip chip-basho">いつか</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.21s"><div class="card-hero hero-joho"><span class="card-cat">Info</span><span class="card-num">07</span></div><div class="card-body"><div class="card-title">A10アルゴリズム解説</div><div class="card-meta">YouTube</div></div></div>
+    <div class="card" data-c="task" style="animation-delay:.24s"><div class="card-hero hero-task"><span class="card-cat">Task</span><span class="card-num">08</span></div><div class="card-body"><div class="card-title">KAISIN商品写真を撮る</div><span class="card-chip chip-task">来週まで</span></div></div>
+  </div>
+  <div class="dock"><div class="drop"><span class="drop-plus">＋</span><span class="drop-txt">放り込む</span></div></div>
+</div>
+<script>
+document.querySelectorAll('.day').forEach(d=>{
+  d.onclick=()=>{ document.querySelectorAll('.day').forEach(x=>x.classList.remove('sel')); d.classList.add('sel'); };
+});
+function f(el,c){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('.card').forEach((r,i)=>{
+    const s=c==='all'||r.dataset.c===c;
+    if(s){r.classList.remove('hide');r.style.animation='none';void r.offsetWidth;r.style.animation=`pop .5s cubic-bezier(0.34,1.5,0.5,1) ${i*0.035}s backwards`;}
+    else r.classList.add('hide');
+  });
+}
+</script>
+</body>
+</html>

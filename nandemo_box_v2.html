@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>なんでも箱 v2</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Inter:wght@400;500;600;700;800&display=swap');
+
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  background:#050505;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  gap:36px;
+  min-height:100vh;
+  padding:40px 16px;
+  font-family:'Inter','Zen Kaku Gothic New',-apple-system,sans-serif;
+  flex-wrap:wrap;
+}
+
+.wrap { display:flex; flex-direction:column; align-items:center; gap:14px; }
+.wrap-label {
+  font-size:11px; letter-spacing:0.18em; text-transform:uppercase;
+  color:#555; font-weight:600;
+}
+
+.phone {
+  width:370px; height:800px;
+  border-radius:48px;
+  overflow:hidden;
+  position:relative;
+  box-shadow:0 50px 130px rgba(0,0,0,0.85);
+}
+
+/* ════════════════════════════════
+   案1：極黒ミニマル
+════════════════════════════════ */
+.p1 {
+  background:#0a0a0b;
+  border:1px solid #1a1a1c;
+}
+.p1 .sb {
+  height:48px; display:flex; align-items:center; justify-content:space-between;
+  padding:0 28px;
+}
+.p1 .sb-t { font-size:15px; font-weight:600; color:#fff; }
+.p1 .sb-i { font-size:11px; color:#fff; letter-spacing:1px; }
+
+.p1 .hd { padding:14px 28px 20px; }
+.p1 .hd-name {
+  font-size:24px; font-weight:800; color:#fff; letter-spacing:-0.03em;
+  margin-bottom:3px;
+}
+.p1 .hd-sub { font-size:12px; color:#5a5a5e; letter-spacing:0.01em; }
+
+/* ミニマルなタブ：テキストのみ、下線で示す */
+.p1 .tabs {
+  display:flex; gap:22px; padding:0 28px 18px;
+  border-bottom:1px solid #161618;
+  overflow-x:auto; scrollbar-width:none;
+}
+.p1 .tabs::-webkit-scrollbar { display:none; }
+.p1 .tab {
+  font-size:13px; color:#5a5a5e; font-weight:500;
+  white-space:nowrap; padding-bottom:14px; margin-bottom:-19px;
+  border-bottom:1.5px solid transparent; cursor:pointer;
+  transition:color 0.2s;
+}
+.p1 .tab.on { color:#fff; border-bottom-color:#fff; }
+.p1 .tab-c {
+  font-size:10px; color:#3a3a3e; margin-left:5px;
+  font-variant-numeric:tabular-nums;
+}
+.p1 .tab.on .tab-c { color:#888; }
+
+/* リスト型（カードじゃなくリスト＝洗練） */
+.p1 .list {
+  padding:8px 0 130px; overflow-y:auto; height:calc(100% - 180px);
+  scrollbar-width:none;
+}
+.p1 .list::-webkit-scrollbar { display:none; }
+
+.p1 .row {
+  display:flex; align-items:center; gap:15px;
+  padding:15px 28px;
+  cursor:pointer; transition:background 0.2s;
+  position:relative;
+  animation:fade 0.5s backwards;
+}
+@keyframes fade { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+.p1 .row:active { background:#101012; }
+.p1 .row.hide { display:none; }
+
+/* 左の細いカラーライン（絵文字の代わり） */
+.p1 .row-line {
+  width:3px; height:34px; border-radius:2px; flex-shrink:0;
+}
+.p1 .row-body { flex:1; min-width:0; }
+.p1 .row-cat {
+  font-size:9px; font-weight:700; letter-spacing:0.13em;
+  text-transform:uppercase; margin-bottom:4px;
+}
+.p1 .row-title {
+  font-size:14px; font-weight:600; color:#ededf0;
+  letter-spacing:-0.01em; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis;
+}
+.p1 .row-meta { font-size:11px; color:#5a5a5e; margin-top:2px; }
+.p1 .row-right {
+  font-size:11px; color:#7a7a7e; font-weight:500;
+  flex-shrink:0; font-variant-numeric:tabular-nums;
+}
+
+.c-event { background:#ff5277; } .t-event { color:#ff5277; }
+.c-task  { background:#a06bff; } .t-task  { color:#a06bff; }
+.c-mono  { background:#ffb627; } .t-mono  { color:#ffb627; }
+.c-basho { background:#2fd87a; } .t-basho { color:#2fd87a; }
+.c-joho  { background:#37b6ff; } .t-joho  { color:#37b6ff; }
+
+.p1 .dock {
+  position:absolute; bottom:0; left:0; right:0;
+  padding:16px 24px 30px;
+  background:linear-gradient(to top,#0a0a0b 60%,transparent);
+}
+.p1 .drop {
+  height:56px; border-radius:16px; background:#fff;
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  cursor:pointer; transition:transform 0.15s;
+}
+.p1 .drop:active { transform:scale(0.98); }
+.p1 .drop-plus { font-size:20px; font-weight:300; color:#111; }
+.p1 .drop-txt { font-size:15px; font-weight:700; color:#111; letter-spacing:0.02em; }
+
+/* ════════════════════════════════
+   案2：カラフル高級（発色×余白×フォント）
+════════════════════════════════ */
+.p2 {
+  background:#fafaf8;
+  border:1px solid #e8e8e4;
+}
+.p2 .sb {
+  height:48px; display:flex; align-items:center; justify-content:space-between;
+  padding:0 28px;
+}
+.p2 .sb-t { font-size:15px; font-weight:600; color:#111; }
+.p2 .sb-i { font-size:11px; color:#111; letter-spacing:1px; }
+
+.p2 .hd { padding:14px 26px 22px; }
+.p2 .hd-name {
+  font-size:25px; font-weight:800; color:#111; letter-spacing:-0.035em;
+  margin-bottom:4px;
+}
+.p2 .hd-sub { font-size:12px; color:#9a9a96; }
+
+/* ピル型タブ：塗りで選択を示す */
+.p2 .tabs {
+  display:flex; gap:8px; padding:0 26px 20px;
+  overflow-x:auto; scrollbar-width:none;
+}
+.p2 .tabs::-webkit-scrollbar { display:none; }
+.p2 .tab {
+  display:flex; align-items:center; gap:7px;
+  padding:9px 15px; border-radius:100px;
+  background:#fff; border:1px solid #ebebe7;
+  cursor:pointer; transition:all 0.25s cubic-bezier(0.34,1.4,0.5,1);
+  white-space:nowrap;
+}
+.p2 .tab-dot { width:7px; height:7px; border-radius:50%; }
+.p2 .tab-lbl { font-size:12.5px; font-weight:600; color:#888; }
+.p2 .tab.on { border-color:transparent; }
+.p2 .tab.on .tab-lbl { color:#fff; }
+.p2 .tab.on .tab-dot { background:#fff !important; }
+.p2 .tab.on[data-c="all"]   { background:#111; }
+.p2 .tab.on[data-c="event"] { background:#f0436c; }
+.p2 .tab.on[data-c="task"]  { background:#8b54f5; }
+.p2 .tab.on[data-c="mono"]  { background:#e89c0e; }
+.p2 .tab.on[data-c="basho"] { background:#1fc068; }
+.p2 .tab.on[data-c="joho"]  { background:#1ba2f0; }
+
+.p2 .wall {
+  padding:2px 22px 130px; columns:2; column-gap:12px;
+  overflow-y:auto; height:calc(100% - 190px); scrollbar-width:none;
+}
+.p2 .wall::-webkit-scrollbar { display:none; }
+
+.p2 .card {
+  break-inside:avoid; margin-bottom:12px;
+  border-radius:22px; background:#fff;
+  border:1px solid #eeeeea; overflow:hidden;
+  cursor:pointer; position:relative;
+  box-shadow:0 2px 12px rgba(0,0,0,0.04);
+  transition:transform 0.3s cubic-bezier(0.34,1.4,0.5,1), box-shadow 0.3s;
+  animation:drop2 0.5s cubic-bezier(0.34,1.4,0.5,1) backwards;
+}
+@keyframes drop2 { from{opacity:0;transform:translateY(-10px) scale(0.97)} to{opacity:1;transform:none} }
+.p2 .card:active { transform:scale(0.97); }
+.p2 .card.hide { display:none; }
+
+/* 色面（絵文字なし、純粋な色のブロック＋小さなインデックス番号） */
+.p2 .card-color {
+  height:96px; position:relative;
+  display:flex; align-items:flex-end; padding:14px;
+}
+.p2 .card-tall .card-color { height:148px; }
+.cc-event { background:linear-gradient(145deg,#ff5277,#ff7a5c); }
+.cc-task  { background:linear-gradient(145deg,#9b6bff,#6b8bff); }
+.cc-mono  { background:linear-gradient(145deg,#ffb627,#ff8a3d); }
+.cc-basho { background:linear-gradient(145deg,#2fd87a,#1fc0a0); }
+.cc-joho  { background:linear-gradient(145deg,#37b6ff,#5a8bff); }
+
+.p2 .card-idx {
+  font-size:11px; font-weight:700; color:rgba(255,255,255,0.85);
+  letter-spacing:0.1em; font-variant-numeric:tabular-nums;
+}
+.p2 .card-catname {
+  position:absolute; top:14px; left:14px;
+  font-size:9px; font-weight:800; letter-spacing:0.16em;
+  color:rgba(255,255,255,0.9); text-transform:uppercase;
+}
+
+.p2 .card-body { padding:13px 15px 16px; }
+.p2 .card-title {
+  font-size:13.5px; font-weight:700; color:#1a1a1a;
+  line-height:1.5; letter-spacing:-0.01em; margin-bottom:5px;
+}
+.p2 .card-meta { font-size:11px; color:#a0a09c; line-height:1.4; }
+.p2 .card-chip {
+  display:inline-block; margin-top:10px;
+  padding:5px 11px; border-radius:100px;
+  font-size:11px; font-weight:600;
+  font-variant-numeric:tabular-nums;
+}
+.ch-event { background:#fff0f3; color:#f0436c; }
+.ch-task  { background:#f3eeff; color:#8b54f5; }
+.ch-mono  { background:#fff6e6; color:#d18908; }
+.ch-basho { background:#e8f9f0; color:#1aa85c; }
+.ch-joho  { background:#e8f5ff; color:#1690d8; }
+
+.p2 .surface {
+  position:absolute; bottom:92px; left:22px; right:22px;
+  background:#111; border-radius:20px;
+  padding:14px 16px; display:flex; align-items:center; gap:13px;
+  box-shadow:0 16px 40px rgba(0,0,0,0.25); cursor:pointer; z-index:20;
+}
+.p2 .surface-mark {
+  width:30px; height:30px; border-radius:9px;
+  background:linear-gradient(135deg,#8b54f5,#f0436c);
+  flex-shrink:0;
+}
+.p2 .surface-body { flex:1; }
+.p2 .surface-lbl {
+  font-size:8.5px; font-weight:800; letter-spacing:0.16em;
+  text-transform:uppercase; color:#8b8b90; margin-bottom:3px;
+}
+.p2 .surface-txt { font-size:12px; color:#f0f0f0; font-weight:500; line-height:1.4; }
+.p2 .surface-x { color:#666; font-size:15px; }
+
+.p2 .dock {
+  position:absolute; bottom:0; left:0; right:0;
+  padding:16px 24px 30px;
+  background:linear-gradient(to top,#fafaf8 60%,transparent);
+}
+.p2 .drop {
+  height:56px; border-radius:16px; background:#111;
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  cursor:pointer; transition:transform 0.15s;
+}
+.p2 .drop:active { transform:scale(0.98); }
+.p2 .drop-plus { font-size:20px; font-weight:300; color:#fff; }
+.p2 .drop-txt { font-size:15px; font-weight:700; color:#fff; letter-spacing:0.02em; }
+</style>
+</head>
+<body>
+
+<!-- ══════ 案1：極黒ミニマル ══════ -->
+<div class="wrap">
+<div class="phone p1">
+  <div class="sb"><span class="sb-t">9:41</span><span class="sb-i">●●● ⛁</span></div>
+  <div class="hd">
+    <div class="hd-name">なんでも箱</div>
+    <div class="hd-sub">放り込むだけ。あとは、箱が。</div>
+  </div>
+  <div class="tabs">
+    <div class="tab on" onclick="f1(this,'all')">すべて<span class="tab-c">32</span></div>
+    <div class="tab" onclick="f1(this,'event')">予定<span class="tab-c">5</span></div>
+    <div class="tab" onclick="f1(this,'task')">タスク<span class="tab-c">4</span></div>
+    <div class="tab" onclick="f1(this,'mono')">モノ<span class="tab-c">8</span></div>
+    <div class="tab" onclick="f1(this,'basho')">場所<span class="tab-c">6</span></div>
+    <div class="tab" onclick="f1(this,'joho')">情報<span class="tab-c">9</span></div>
+  </div>
+  <div class="list" id="l1">
+    <div class="row" data-c="event" style="animation-delay:.02s"><div class="row-line c-event"></div><div class="row-body"><div class="row-cat t-event">EVENT</div><div class="row-title">AIゼミ・最前線</div><div class="row-meta">SHIFT AI ウェビナー</div></div><div class="row-right">6/17 19:00</div></div>
+    <div class="row" data-c="mono" style="animation-delay:.05s"><div class="row-line c-mono"></div><div class="row-body"><div class="row-cat t-mono">WANT</div><div class="row-title">G-SHOCK GW-B5600</div></div><div class="row-right">¥28,600</div></div>
+    <div class="row" data-c="task" style="animation-delay:.08s"><div class="row-line c-task"></div><div class="row-body"><div class="row-cat t-task">TASK</div><div class="row-title">請求書をLIMUに送る</div></div><div class="row-right">今週中</div></div>
+    <div class="row" data-c="basho" style="animation-delay:.11s"><div class="row-line c-basho"></div><div class="row-body"><div class="row-cat t-basho">PLACE</div><div class="row-title">渋谷の角打ちバー</div><div class="row-meta">道玄坂・徒歩5分</div></div><div class="row-right">行きたい</div></div>
+    <div class="row" data-c="joho" style="animation-delay:.14s"><div class="row-line c-joho"></div><div class="row-body"><div class="row-cat t-joho">INFO</div><div class="row-title">Claude Code 活用術まとめ</div><div class="row-meta">note記事</div></div><div class="row-right">↗</div></div>
+    <div class="row" data-c="event" style="animation-delay:.17s"><div class="row-line c-event"></div><div class="row-body"><div class="row-cat t-event">EVENT</div><div class="row-title">格闘技セミナー@横浜</div></div><div class="row-right">6/21 14:00</div></div>
+    <div class="row" data-c="mono" style="animation-delay:.20s"><div class="row-line c-mono"></div><div class="row-body"><div class="row-cat t-mono">WANT</div><div class="row-title">Adidas Samba OG</div></div><div class="row-right">セール待ち</div></div>
+    <div class="row" data-c="basho" style="animation-delay:.23s"><div class="row-line c-basho"></div><div class="row-body"><div class="row-cat t-basho">PLACE</div><div class="row-title">屋久島・縄文杉</div><div class="row-meta">鹿児島県</div></div><div class="row-right">いつか</div></div>
+    <div class="row" data-c="joho" style="animation-delay:.26s"><div class="row-line c-joho"></div><div class="row-body"><div class="row-cat t-joho">INFO</div><div class="row-title">A10アルゴリズム解説</div><div class="row-meta">YouTube</div></div><div class="row-right">↗</div></div>
+    <div class="row" data-c="task" style="animation-delay:.29s"><div class="row-line c-task"></div><div class="row-body"><div class="row-cat t-task">TASK</div><div class="row-title">KAISIN商品写真を撮る</div></div><div class="row-right">来週まで</div></div>
+  </div>
+  <div class="dock"><div class="drop"><span class="drop-plus">＋</span><span class="drop-txt">放り込む</span></div></div>
+</div>
+<div class="wrap-label">案1 — 極黒ミニマル</div>
+</div>
+
+<!-- ══════ 案2：カラフル高級 ══════ -->
+<div class="wrap">
+<div class="phone p2">
+  <div class="sb"><span class="sb-t">9:41</span><span class="sb-i">●●● ⛁</span></div>
+  <div class="hd">
+    <div class="hd-name">なんでも箱</div>
+    <div class="hd-sub">放り込むだけ。あとは、箱が。</div>
+  </div>
+  <div class="tabs">
+    <div class="tab on" data-c="all" onclick="f2(this,'all')"><span class="tab-dot" style="background:#111"></span><span class="tab-lbl">すべて</span></div>
+    <div class="tab" data-c="event" onclick="f2(this,'event')"><span class="tab-dot" style="background:#f0436c"></span><span class="tab-lbl">予定</span></div>
+    <div class="tab" data-c="task" onclick="f2(this,'task')"><span class="tab-dot" style="background:#8b54f5"></span><span class="tab-lbl">タスク</span></div>
+    <div class="tab" data-c="mono" onclick="f2(this,'mono')"><span class="tab-dot" style="background:#e89c0e"></span><span class="tab-lbl">モノ</span></div>
+    <div class="tab" data-c="basho" onclick="f2(this,'basho')"><span class="tab-dot" style="background:#1fc068"></span><span class="tab-lbl">場所</span></div>
+    <div class="tab" data-c="joho" onclick="f2(this,'joho')"><span class="tab-dot" style="background:#1ba2f0"></span><span class="tab-lbl">情報</span></div>
+  </div>
+  <div class="wall" id="w2">
+    <div class="card card-tall" data-c="event" style="animation-delay:.02s"><div class="card-color cc-event"><span class="card-catname">Event</span><span class="card-idx">01</span></div><div class="card-body"><div class="card-title">AIゼミ・最前線</div><div class="card-meta">SHIFT AI ウェビナー</div><span class="card-chip ch-event">6/17 19:00</span></div></div>
+    <div class="card" data-c="mono" style="animation-delay:.05s"><div class="card-color cc-mono"><span class="card-catname">Want</span><span class="card-idx">02</span></div><div class="card-body"><div class="card-title">G-SHOCK GW-B5600</div><span class="card-chip ch-mono">¥28,600</span></div></div>
+    <div class="card" data-c="task" style="animation-delay:.08s"><div class="card-color cc-task"><span class="card-catname">Task</span><span class="card-idx">03</span></div><div class="card-body"><div class="card-title">請求書をLIMUに送る</div><span class="card-chip ch-task">今週中</span></div></div>
+    <div class="card card-tall" data-c="basho" style="animation-delay:.11s"><div class="card-color cc-basho"><span class="card-catname">Place</span><span class="card-idx">04</span></div><div class="card-body"><div class="card-title">渋谷の角打ちバー</div><div class="card-meta">道玄坂・徒歩5分</div><span class="card-chip ch-basho">行きたい</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.14s"><div class="card-color cc-joho"><span class="card-catname">Info</span><span class="card-idx">05</span></div><div class="card-body"><div class="card-title">Claude Code 活用術まとめ</div><div class="card-meta">note記事</div></div></div>
+    <div class="card" data-c="event" style="animation-delay:.17s"><div class="card-color cc-event"><span class="card-catname">Event</span><span class="card-idx">06</span></div><div class="card-body"><div class="card-title">格闘技セミナー@横浜</div><span class="card-chip ch-event">6/21 14:00</span></div></div>
+    <div class="card" data-c="mono" style="animation-delay:.20s"><div class="card-color cc-mono"><span class="card-catname">Want</span><span class="card-idx">07</span></div><div class="card-body"><div class="card-title">Adidas Samba OG</div><span class="card-chip ch-mono">セール待ち</span></div></div>
+    <div class="card card-tall" data-c="basho" style="animation-delay:.23s"><div class="card-color cc-basho"><span class="card-catname">Place</span><span class="card-idx">08</span></div><div class="card-body"><div class="card-title">屋久島・縄文杉</div><div class="card-meta">鹿児島県</div><span class="card-chip ch-basho">いつか</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.26s"><div class="card-color cc-joho"><span class="card-catname">Info</span><span class="card-idx">09</span></div><div class="card-body"><div class="card-title">A10アルゴリズム解説</div><div class="card-meta">YouTube</div></div></div>
+    <div class="card" data-c="task" style="animation-delay:.29s"><div class="card-color cc-task"><span class="card-catname">Task</span><span class="card-idx">10</span></div><div class="card-body"><div class="card-title">KAISIN商品写真を撮る</div><span class="card-chip ch-task">来週まで</span></div></div>
+  </div>
+  <div class="surface" id="s2">
+    <div class="surface-mark"></div>
+    <div class="surface-body"><div class="surface-lbl">そういえば</div><div class="surface-txt">3ヶ月前の「渋谷バー」、今週末あいてますよ</div></div>
+    <div class="surface-x" onclick="event.stopPropagation();document.getElementById('s2').style.display='none'">✕</div>
+  </div>
+  <div class="dock"><div class="drop"><span class="drop-plus">＋</span><span class="drop-txt">放り込む</span></div></div>
+</div>
+<div class="wrap-label">案2 — カラフル高級</div>
+</div>
+
+<script>
+function f1(el,c){
+  el.parentNode.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('#l1 .row').forEach((r,i)=>{
+    const s=c==='all'||r.dataset.c===c;
+    if(s){r.classList.remove('hide');r.style.animation='none';void r.offsetWidth;r.style.animation=`fade .4s ${i*0.03}s backwards`;}
+    else r.classList.add('hide');
+  });
+}
+function f2(el,c){
+  el.parentNode.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('#w2 .card').forEach((r,i)=>{
+    const s=c==='all'||r.dataset.c===c;
+    if(s){r.classList.remove('hide');r.style.animation='none';void r.offsetWidth;r.style.animation=`drop2 .45s cubic-bezier(0.34,1.4,0.5,1) ${i*0.03}s backwards`;}
+    else r.classList.add('hide');
+  });
+  document.getElementById('s2').style.display=(c==='all')?'flex':'none';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# OS
+Thumbs.db
+.DS_Store
+
+# エディタ
+.vscode/
+.idea/
+
+# 一時ファイル
+*.tmp
+*.log

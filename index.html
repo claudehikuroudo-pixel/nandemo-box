@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="theme-color" content="#f6f6f8" />
+<title>なんでも箱</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', sans-serif;
+    background: radial-gradient(circle at 20% 10%,#ffe8f0 0%,transparent 45%),
+                radial-gradient(circle at 85% 25%,#e8f0ff 0%,transparent 50%),
+                radial-gradient(circle at 50% 90%,#fff0e0 0%,transparent 45%),#f5f5f7;
+  }
+  #root { min-height: 100vh; min-height: 100dvh; }
+  textarea, input, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  @keyframes nbScan {
+    0%   { top: -3px; opacity: 1; }
+    80%  { opacity: 1; }
+    100% { top: 105%; opacity: 0; }
+  }
+  @keyframes nbSparkle {
+    0%   { transform: scale(0) rotate(0deg);   opacity: 0; }
+    35%  { transform: scale(1.3) rotate(60deg); opacity: 1; }
+    70%  { transform: scale(0.9) rotate(110deg);opacity: 0.7; }
+    100% { transform: scale(0) rotate(160deg);  opacity: 0; }
+  }
+  @keyframes nbRipple {
+    0%   { transform: scale(0.3); opacity: 0.9; }
+    100% { transform: scale(2.8); opacity: 0;   }
+  }
+  @keyframes nbFlash {
+    0%   { opacity: 0; }
+    40%  { opacity: 0.55; }
+    100% { opacity: 0; }
+  }
+  @keyframes nbPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(80,200,255,0.6); }
+    50%      { box-shadow: 0 0 0 8px rgba(80,200,255,0); }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+  // ブラウザ単体で動かすため、JSX変換を classic runtime（React.createElement）に固定。
+  // 既定の automatic runtime は import 文を注入してしまい単体ページで動かないため。
+  Babel.registerPreset('classic-react', { presets: [[Babel.availablePresets['react'], { runtime: 'classic' }]] });
+</script>
+
+<script type="text/babel" data-presets="classic-react">
+const { useState, useRef, useEffect } = React;
+
+// 仕分けに使うモデル（安いHaikuを既定に。精度を上げたいときは画面の設定から変更可）
+const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
+
+// ── カテゴリ定義 ──
+const CATS = {
+  event: { label: "予定", en: "Event", grad: "linear-gradient(145deg,#ff6b9d,#ff8f6b)", chip: "rgba(255,94,138,0.13)", chipC: "#f0436c", dot: "#ff5e8a" },
+  task:  { label: "タスク", en: "Task", grad: "linear-gradient(145deg,#a06bff,#6b8bff)", chip: "rgba(155,107,255,0.13)", chipC: "#8b54f5", dot: "#9b6bff" },
+  mono:  { label: "モノ", en: "Want", grad: "linear-gradient(145deg,#ffc247,#ff9a3d)", chip: "rgba(255,182,39,0.16)", chipC: "#d18908", dot: "#ffb627" },
+  basho: { label: "場所", en: "Place", grad: "linear-gradient(145deg,#3fe08a,#1fc8b0)", chip: "rgba(47,216,122,0.14)", chipC: "#1aa85c", dot: "#2fd87a" },
+  joho:  { label: "情報", en: "Info", grad: "linear-gradient(145deg,#47bfff,#6b9aff)", chip: "rgba(55,182,255,0.14)", chipC: "#1690d8", dot: "#37b6ff" },
+};
+
+// ── 初期サンプル（初回だけ表示。一度使い始めると保存内容に置き換わる）──
+const SEED = [
+  { id: 1, category: "event", title: "オンライン勉強会 見逃し配信", meta: "オンライン・期間限定", chip: "期限を確認" },
+  { id: 2, category: "mono", title: "G-SHOCK GW-B5600", meta: "", chip: "¥28,600" },
+  { id: 3, category: "task", title: "請求書を送る", meta: "", chip: "今週中" },
+  { id: 4, category: "basho", title: "気になる角打ちバー", meta: "渋谷・徒歩5分", chip: "行きたい" },
+  { id: 5, category: "joho", title: "AI活用術のまとめ記事", meta: "あとで読む", chip: "" },
+];
+
+// ── localStorage 保存ヘルパー ──
+const LS_ITEMS = "nb_items_v1";
+const LS_KEY = "nb_apikey";
+const LS_MODEL = "nb_model";
+
+function extractUrl(text) {
+  const m = text && text.match(/https?:\/\/[^\s]+/);
+  return m ? m[0].replace(/[.,)】」』>]+$/, "") : null;
+}
+function toDateStr(dt) {
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+}
+
+function compressImage(dataUrl) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 600;
+      const scale = Math.min(1, maxW / img.width);
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', 0.45));
+    };
+    img.src = dataUrl;
+    img.onerror = () => resolve(dataUrl);
+  });
+}
+
+function loadItems() {
+  try {
+    const raw = localStorage.getItem(LS_ITEMS);
+    if (!raw) return SEED;
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : SEED;
+  } catch (e) { return SEED; }
+}
+function saveItems(items) {
+  try {
+    localStorage.setItem(LS_ITEMS, JSON.stringify(items));
+  } catch (e) {
+    // 容量オーバー時は_imgだけ除いて再試行
+    try {
+      const slim = items.map(({ _img, ...rest }) => rest);
+      localStorage.setItem(LS_ITEMS, JSON.stringify(slim));
+    } catch (e2) { /* 諦める */ }
+  }
+}
+
+function App() {
+  const [items, setItems] = useState(loadItems);
+  const [filter, setFilter] = useState("all");
+  const [sheet, setSheet] = useState(false);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [image, setImage] = useState(null);
+  const [menuId, setMenuId] = useState(null);
+  const [lightbox, setLightbox] = useState(null);
+  const [resultDate, setResultDate] = useState(()=>toDateStr(new Date()));
+  const [scanning, setScanning] = useState(null);
+  const fileRef = useRef(null);
+  const calScrollRef = useRef(null);
+  const nextId = useRef(Date.now());
+  const today = (() => { const d = new Date(); d.setHours(0,0,0,0); return d; })();
+  // calBase = 現在の週の日曜日の2週前（ページ0の起点）
+  const calBase = (() => { const d = new Date(today); d.setDate(d.getDate()-d.getDay()-14); return d; })();
+
+  // 設定（APIキー）
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem(LS_KEY) || "");
+  const [model, setModel] = useState(() => localStorage.getItem(LS_MODEL) || DEFAULT_MODEL);
+  const [settings, setSettings] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [calPageIdx, setCalPageIdx] = useState(1);
+
+  // items が変わるたび保存
+  useEffect(() => { saveItems(items); }, [items]);
+  // カレンダーを現在の2週間ブロック（ページ1）にスクロール
+  useEffect(() => {
+    if (calScrollRef.current) {
+      calScrollRef.current.scrollLeft = calScrollRef.current.offsetWidth;
+    }
+  }, []);
+
+  function calGo(dir) {
+    const next = Math.max(0, Math.min(5, calPageIdx + dir));
+    setCalPageIdx(next);
+    if (calScrollRef.current) {
+      calScrollRef.current.scrollLeft = calScrollRef.current.offsetWidth * next;
+    }
+  }
+  function openSettings() { setKeyDraft(apiKey); setSettings(true); }
+  function saveSettings() {
+    const k = keyDraft.trim();
+    setApiKey(k);
+    localStorage.setItem(LS_KEY, k);
+    localStorage.setItem(LS_MODEL, model);
+    setSettings(false);
+  }
+
+  async function pickImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const compressed = await compressImage(reader.result);
+      setImage(compressed);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function fetchUrlMeta(url) {
+    try {
+      const res = await fetch(`https://api.microlink.io?url=${encodeURIComponent(url)}&timeout=5000`);
+      const data = await res.json();
+      if (data.status === "success") {
+        return {
+          title: data.data.title || "",
+          description: data.data.description || "",
+          image: data.data.image?.url || "",
+        };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  async function analyze(text, img) {
+    if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); return; }
+    setBusy(true); setError(""); setResult(null);
+    try {
+      const sourceUrl = extractUrl(text);
+      let urlMeta = null;
+      if (sourceUrl) {
+        urlMeta = await fetchUrlMeta(sourceUrl);
+      }
+
+      let contextText = text || "";
+      if (urlMeta) {
+        contextText += `\n\n[ページ情報]\nタイトル: ${urlMeta.title}\n説明: ${urlMeta.description}`;
+      }
+
+      const imgInstruction = img
+        ? `写真が放り込まれました。画像を詳しく分析してください：
+- 商品・時計・ガジェット・服なら：ブランド名・モデル名・参考価格（読み取れれば）
+- 場所・店・カフェ・レストランなら：店名・場所・ジャンル
+- スクリーンショット・SNS・記事なら：タイトルと主要情報
+- その他：具体的な名称・特徴
+タイトルには「○○（ブランド・モデル）」のように具体的な名前を入れてください。`
+        : `放り込まれたテキスト:\n"""${contextText}"""`;
+
+      const prompt = `あなたは「なんでも箱」アプリの仕分けエンジンです。
+ユーザーが放り込んだ内容を読み、5カテゴリのどれかに分類してJSONだけ返してください。
+
+カテゴリ定義:
+- event: 日時のあるイベント・ウェビナー・講座・セミナー・配信
+- task: やること・締切のある作業
+- mono: 欲しいもの（商品・ガジェット・服・時計など）
+- basho: 行きたい場所・店・スポット
+- joho: あとで読む記事・動画・情報・メモ
+
+${imgInstruction}
+
+以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
+{"category":"event|task|mono|basho|joho","title":"30字以内・具体的なブランド名や店名を含む","meta":"補足(場所/価格/媒体など)","chip":"価格or日時or状態の短いラベル","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","confidence":0.0〜1.0}`;
+
+      const content = [];
+      if (img) {
+        const m = img.match(/^data:(image\/\w+);base64,(.+)$/);
+        if (m) content.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
+      }
+      content.push({ type: "text", text: prompt });
+
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: model,
+          max_tokens: 1000,
+          messages: [{ role: "user", content }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setError("AIエラー: " + (data.error.message || "キーや残高を確認してください"));
+        return;
+      }
+      let txt = data.content.filter(c => c.type === "text").map(c => c.text).join("");
+      txt = txt.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(txt);
+      if (!CATS[parsed.category]) parsed.category = "joho";
+      if (parsed.date) setResultDate(parsed.date);
+      // URL：入力から抽出。写真のみの場合：Google検索URLを自動生成
+      parsed.sourceUrl = sourceUrl
+        || (img ? `https://www.google.com/search?q=${encodeURIComponent(parsed.title)}` : null);
+      parsed.searchLabel = img && !sourceUrl ? "Googleで調べる" : null;
+      if (img) parsed._img = img;
+      setResult(parsed);
+    } catch (e) {
+      setError("解析できませんでした。通信かキーを確認して、もう一度試してください。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function confirmAdd() {
+    if (!result) return;
+    const item = { id: nextId.current++, ...result };
+    if ((result.category==="event"||result.category==="task") && resultDate) item.date = resultDate;
+    setItems(prev => [item, ...prev]);
+    setResult(null); setInput(""); setImage(null); setSheet(false);
+    setResultDate(toDateStr(new Date()));
+  }
+  function handleImageSearch(e, item) {
+    e.stopPropagation();
+    if (!item.sourceUrl) return;
+    setScanning(item.id);
+    setTimeout(() => {
+      setScanning(null);
+      window.open(item.sourceUrl, '_blank');
+    }, 750);
+  }
+
+  function changeCat(id, cat) {
+    setItems(prev => prev.map(it => it.id === id ? { ...it, category: cat } : it));
+    setMenuId(null);
+  }
+  function removeItem(id) {
+    setItems(prev => prev.filter(it => it.id !== id));
+    setMenuId(null);
+  }
+
+  const visible = items.filter(it => filter === "all" || it.category === filter);
+
+  return (
+    <div style={S.bg}>
+      <div style={S.phone}>
+        <div style={S.sb}><span style={S.sbt}>なんでも箱</span><span style={S.sbi}>●●● ⛁</span></div>
+
+        <div style={S.hd}>
+          <div style={S.hdName}>なんでも<span style={S.accent}>箱</span></div>
+          <div style={{display:"flex", alignItems:"center", gap:12}}>
+            <div style={S.hdMonth}>6月 <span style={{ color: "#a0a0b0", fontSize: 12 }}>2026</span></div>
+            <div style={S.gear} onClick={openSettings} title="設定">⚙</div>
+          </div>
+        </div>
+
+        {!apiKey && (
+          <div style={S.keyBanner} onClick={openSettings}>
+            ⚙ APIキーを設定すると、放り込んだものをAIが自動で仕分けます →
+          </div>
+        )}
+
+        {/* スワイプカレンダー */}
+        <div style={S.cal}>
+          {/* 月ナビ */}
+          <div style={S.calNavRow}>
+            <div style={{...S.calNavBtn,...(calPageIdx===0?{opacity:0.25,pointerEvents:"none"}:{})}} onClick={()=>calGo(-1)}>‹</div>
+            <div style={{fontSize:11,fontWeight:700,color:"#888"}}>
+              {(()=>{const d=new Date(calBase);d.setDate(d.getDate()+calPageIdx*14);return d.toLocaleDateString('ja-JP',{month:'long'});})()}
+            </div>
+            <div style={{...S.calNavBtn,...(calPageIdx===5?{opacity:0.25,pointerEvents:"none"}:{})}} onClick={()=>calGo(1)}>›</div>
+          </div>
+          {/* 曜日ヘッダー（固定） */}
+          <div style={S.calWeek}>
+            {["日","月","火","水","木","金","土"].map((n,i)=>(
+              <div key={i} style={{flex:1,textAlign:"center",fontSize:10,fontWeight:700,color:i===0?"#ff8a9a":i===6?"#8aa8ff":"#b0b0be",paddingBottom:4}}>{n}</div>
+            ))}
+          </div>
+          {/* スワイプで切替わる2週間ページ群 */}
+          <div style={S.calScroll} ref={calScrollRef}>
+            {Array.from({length:6},(_,pi)=>{
+              const startOffset = pi*14;
+              return (
+                <div key={pi} style={S.calPage}>
+                  {[0,7].map(weekOff=>(
+                    <div key={weekOff} style={S.calWeek}>
+                      {Array.from({length:7},(_,di)=>{
+                        const dt = new Date(calBase);
+                        dt.setDate(dt.getDate()+startOffset+weekOff+di);
+                        const isToday = dt.toDateString()===today.toDateString();
+                        const isSun = di===0, isSat = di===6;
+                        const d = dt.getDate(), m = dt.getMonth();
+                        return (
+                          <div key={di} style={{...S.dayMini,...(isToday?S.dayToday:{})}}>
+                            <span style={{...S.dayNumMini,...(isSun?{color:"#ff8a9a"}:isSat?{color:"#8aa8ff"}:{}),...(isToday?{color:"#fff"}:{})}}>{d}</span>
+                            <span style={S.dayDots}>
+                              {items.filter(it=>it.date===toDateStr(dt)).slice(0,3).map((it,idx)=>(
+                                <i key={idx} style={{...S.dot,background:isToday?"rgba(255,255,255,0.9)":CATS[it.category]?.dot||"#ccc"}}/>
+                              ))}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+          <div style={S.calEvents}>
+            <div style={S.calEv}>
+              <span style={S.calEvTime}>19:00</span>
+              <span style={{...S.calEvBar, background:"linear-gradient(180deg,#ff5e8a,#ff8a6b)"}}/>
+              <div><div style={S.calEvTitle}>オンライン勉強会</div><div style={S.calEvMeta}>AI活用 · オンライン</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div style={S.boxHead}>気になる箱</div>
+        <div style={S.tabs}>
+          {[["all","すべて","#16161e"],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["basho","場所",CATS.basho.dot],["joho","情報",CATS.joho.dot],["event","予定",CATS.event.dot]].map(([c,l,col])=>(
+            <div key={c} onClick={()=>setFilter(c)}
+              style={{...S.tab, ...(filter===c?{...S.tabOn, background: c==="all"?"linear-gradient(120deg,#16161e,#3a3a4e)":CATS[c]?CATS[c].grad:"#16161e"}:{})}}>
+              <span style={{...S.tabDot, background: filter===c?"#fff":col}}/>
+              <span style={{...S.tabLbl, ...(filter===c?{color:"#fff"}:{})}}>{l}</span>
+            </div>
+          ))}
+        </div>
+
+        <div style={S.wall}>
+          {visible.map((it)=>{
+            const c = CATS[it.category];
+            return (
+              <div key={it.id} style={S.card} onClick={()=>setMenuId(menuId===it.id?null:it.id)}>
+                <div style={{...S.hero, background:c.grad, ...(it._img&&it.sourceUrl?{cursor:"pointer"}:{})}}
+                  onClick={e => { if(it._img && it.sourceUrl){ handleImageSearch(e,it); } }}>
+                  {it._img && <img src={it._img} alt="" style={S.cardHeroImg} />}
+                  <span style={S.heroGlow}/>
+                  <span style={S.cardCat}>{c.en}</span>
+                  {it._img && it.sourceUrl && scanning !== it.id && (
+                    <span style={S.lensHint}>🔍</span>
+                  )}
+                  {scanning === it.id && (
+                    <div style={S.scanOverlay}>
+                      <div style={S.scanLine}/>
+                      {[{left:"22%",top:"38%",delay:0},{left:"62%",top:"52%",delay:90},{left:"44%",top:"18%",delay:160},{left:"75%",top:"28%",delay:50}].map((p,i)=>(
+                        <div key={i} style={{...S.sparkle,left:p.left,top:p.top,animationDelay:`${p.delay}ms`}}>✦</div>
+                      ))}
+                      <div style={S.scanRipple}/>
+                      <div style={S.scanFlash}/>
+                    </div>
+                  )}
+                </div>
+                <div style={S.cardBody}>
+                  <div style={S.cardTitle}>{it.title}</div>
+                  {it.meta && <div style={S.cardMeta}>{it.meta}</div>}
+                  {it.chip && <span style={{...S.cardChip, background:c.chip, color:c.chipC}}>{it.chip}</span>}
+                  {it.sourceUrl && (
+                    <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer"
+                       style={S.cardLink} onClick={e=>e.stopPropagation()}>
+                      {it.searchLabel ? `🔍 ${it.searchLabel}` : "🔗 開く"}
+                    </a>
+                  )}
+                  {it._img && (
+                    <div style={S.cardImgBtn} onClick={e=>{e.stopPropagation();setLightbox(it._img);}}>
+                      🔍 画像
+                    </div>
+                  )}
+                </div>
+                {menuId===it.id && (
+                  <div style={S.menu} onClick={e=>e.stopPropagation()}>
+                    <div style={S.menuHint}>分類を変える</div>
+                    {Object.entries(CATS).map(([k,v])=>(
+                      <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
+                        <span style={{...S.tabDot, background:v.dot}}/>{v.label}{k===it.category && " ✓"}
+                      </div>
+                    ))}
+                    <div style={S.menuDel} onClick={()=>removeItem(it.id)}>削除する</div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={S.dock}>
+          <div style={S.drop} onClick={()=>setSheet(true)}>
+            <span style={S.dropPlus}>＋</span><span style={S.dropTxt}>放り込む</span>
+          </div>
+        </div>
+
+        {/* 放り込みシート */}
+        {sheet && (
+          <div style={S.sheetWrap} onClick={()=>!busy && setSheet(false)}>
+            <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+              <div style={S.sheetGrip}/>
+              {!result ? (
+                <>
+                  <div style={S.sheetTitle}>気になるを放り込む</div>
+                  <div style={S.sheetSub}>URL・テキスト・予定の案内など、何でも貼ってOK</div>
+                  <textarea
+                    style={S.textarea}
+                    placeholder="例：LINEで来たイベント案内を貼り付け、URLを貼る、「渋谷の○○ってバー行きたい」など"
+                    value={input}
+                    onChange={e=>setInput(e.target.value)}
+                    disabled={busy}
+                  />
+                  <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={pickImage} />
+                  {!image ? (
+                    <div style={S.photoBtn} onClick={()=>fileRef.current?.click()}>
+                      <span style={{fontSize:18}}>📷</span>
+                      <span>スクショ・写真を放り込む</span>
+                    </div>
+                  ) : (
+                    <div style={S.photoPreview}>
+                      <img src={image} alt="" style={S.photoThumb} />
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13, fontWeight:700, color:"#1a1a24"}}>写真を放り込みました</div>
+                        <div style={{fontSize:11, color:"#9a9aaa", marginTop:2}}>AIが画像を読み取ります</div>
+                      </div>
+                      <div style={S.photoX} onClick={()=>setImage(null)}>✕</div>
+                    </div>
+                  )}
+                  {error && <div style={S.error}>{error}</div>}
+                  <div style={S.sheetBtns}>
+                    <button style={S.btnGhost} onClick={()=>setSheet(false)} disabled={busy}>やめる</button>
+                    <button style={{...S.btnMain, ...(busy||(!input.trim()&&!image)?{opacity:0.5}:{})}}
+                      onClick={()=>analyze(input, image)} disabled={busy||(!input.trim()&&!image)}>
+                      {busy ? "AIが読み取り中…" : "AIにまかせる →"}
+                    </button>
+                  </div>
+                  <div style={S.samples}>
+                    <div style={S.samplesLabel}>試しに放り込む（テキスト）：</div>
+                    {[
+                      "7月3日19時からオンライン勉強会。AI活用がテーマ。",
+                      "G-SHOCK GW-B5600 楽天で28,600円。黒のやつ欲しい",
+                      "来週金曜までに資料作る",
+                      "https://note.com/ AIで業務自動化する方法まとめ"
+                    ].map((s,i)=>(
+                      <div key={i} style={S.sampleChip} onClick={()=>{setInput(s);}}>{s.slice(0,22)}…</div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={S.sheetTitle}>AIが読み取りました</div>
+                  <div style={S.preview}>
+                    <div style={{...S.previewHero, background:CATS[result.category].grad}}>
+                      {result._img && <img src={result._img} alt="" style={S.previewImg} />}
+                      <span style={S.cardCat}>{CATS[result.category].en}</span>
+                    </div>
+                    <div style={{padding:"14px 16px 16px"}}>
+                      <div style={S.cardTitle}>{result.title}</div>
+                      {result.meta && <div style={S.cardMeta}>{result.meta}</div>}
+                      {result.chip && <span style={{...S.cardChip, background:CATS[result.category].chip, color:CATS[result.category].chipC}}>{result.chip}</span>}
+                    </div>
+                  </div>
+                  {(result.category==="event"||result.category==="task") && (
+                    <>
+                      <div style={S.fieldLabel}>
+                        日付
+                        {result.date
+                          ? <span style={{marginLeft:6,fontSize:10,color:"#22c55e",fontWeight:700}}>✓ AIが読み取り済み</span>
+                          : <span style={{marginLeft:6,fontSize:10,color:"#f59e0b"}}>日付が見つかりません — 手動で設定</span>
+                        }
+                      </div>
+                      <input type="date" style={{...S.dateInput,...(result.date?{borderColor:"#22c55e"}:{})}}
+                        value={resultDate} onChange={e=>setResultDate(e.target.value)} />
+                    </>
+                  )}
+                  <div style={S.reclassLabel}>違ったら選び直す</div>
+                  <div style={S.reclass}>
+                    {Object.entries(CATS).map(([k,v])=>(
+                      <div key={k} onClick={()=>setResult({...result, category:k})}
+                        style={{...S.reclassChip, ...(k===result.category?{background:v.grad, color:"#fff", borderColor:"transparent"}:{})}}>
+                        <span style={{...S.tabDot, background: k===result.category?"#fff":v.dot}}/>{v.label}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={S.sheetBtns}>
+                    <button style={S.btnGhost} onClick={()=>setResult(null)}>戻る</button>
+                    <button style={S.btnMain} onClick={confirmAdd}>箱に入れる ✓</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 画像ライトボックス */}
+        {lightbox && (
+          <div style={S.lbWrap} onClick={()=>setLightbox(null)}>
+            <img src={lightbox} alt="" style={S.lbImg} />
+            <div style={S.lbClose}>✕</div>
+          </div>
+        )}
+
+        {/* 設定シート */}
+        {settings && (
+          <div style={S.sheetWrap} onClick={()=>setSettings(false)}>
+            <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+              <div style={S.sheetGrip}/>
+              <div style={S.sheetTitle}>設定</div>
+              <div style={S.sheetSub}>Anthropic（Claude）のAPIキーを貼り付けてください。キーはこの端末の中だけに保存されます。</div>
+              <div style={S.fieldLabel}>APIキー（sk-ant-… で始まる文字列）</div>
+              <textarea
+                style={{...S.textarea, minHeight:64, fontFamily:"monospace", fontSize:12}}
+                placeholder="sk-ant-..."
+                value={keyDraft}
+                onChange={e=>setKeyDraft(e.target.value)}
+              />
+              <div style={S.fieldLabel}>使うモデル</div>
+              <select style={S.select} value={model} onChange={e=>setModel(e.target.value)}>
+                <option value="claude-haiku-4-5-20251001">Haiku（速い・激安・おすすめ）</option>
+                <option value="claude-sonnet-4-6">Sonnet（賢い・少し高い）</option>
+              </select>
+              <div style={S.help}>
+                キーの取り方： <b>console.anthropic.com</b> に登録 → Billingで$5チャージ → API keys → Create Key
+              </div>
+              <div style={S.sheetBtns}>
+                <button style={S.btnGhost} onClick={()=>setSettings(false)}>閉じる</button>
+                <button style={S.btnMain} onClick={saveSettings}>保存する</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const S = {
+  bg: { minHeight:"100vh", minHeight:"100dvh", display:"flex", justifyContent:"center", alignItems:"flex-start", padding:"0",
+    fontFamily:"'Inter',-apple-system,'Hiragino Sans',sans-serif" },
+  phone: { width:"100%", maxWidth:440, minHeight:"100vh", minHeight:"100dvh", position:"relative", overflow:"hidden",
+    background:"radial-gradient(circle at 25% 5%,rgba(255,180,210,0.32) 0%,transparent 36%),radial-gradient(circle at 90% 14%,rgba(150,190,255,0.30) 0%,transparent 40%),radial-gradient(circle at 50% 97%,rgba(255,200,140,0.26) 0%,transparent 40%),#f6f6f8" },
+  sb: { height:44, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 24px" },
+  sbt: { fontSize:13, fontWeight:700, color:"#1a1a2e" }, sbi:{ fontSize:11, color:"#1a1a2e", letterSpacing:1 },
+  hd: { padding:"6px 22px 12px", display:"flex", alignItems:"flex-end", justifyContent:"space-between" },
+  hdName: { fontSize:26, fontWeight:900, color:"#16161e", letterSpacing:"-0.04em" },
+  accent: { background:"linear-gradient(120deg,#ff6b9d,#a06bff,#56c4ff)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent" },
+  hdMonth: { fontSize:14, fontWeight:700, color:"#16161e" },
+  gear: { fontSize:18, cursor:"pointer", opacity:0.5, lineHeight:1 },
+  keyBanner: { margin:"0 18px 8px", padding:"11px 14px", borderRadius:14, background:"linear-gradient(120deg,#16161e,#34344a)", color:"#fff", fontSize:12, fontWeight:600, cursor:"pointer" },
+  cal: { margin:"0 18px 6px", padding:"14px 12px 12px", borderRadius:24, background:"rgba(255,255,255,0.7)", backdropFilter:"blur(28px)", WebkitBackdropFilter:"blur(28px)", border:"1px solid rgba(255,255,255,0.9)", boxShadow:"0 8px 26px rgba(100,100,150,0.1)" },
+  calWeek: { display:"flex", justifyContent:"space-between" },
+  day: { flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:7, padding:"6px 0 8px", borderRadius:16 },
+  dayToday: { background:"linear-gradient(135deg,#16161e,#34344a)" },
+  dayName: { fontSize:10, fontWeight:600, color:"#b0b0be" }, dayNum:{ fontSize:15, fontWeight:700, color:"#3a3a48" },
+  dayMini: { flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:3, padding:"4px 0 5px", borderRadius:12 },
+  dayNumMini: { fontSize:13, fontWeight:700, color:"#3a3a48" },
+  calScroll: { display:"flex", overflowX:"scroll", scrollSnapType:"x mandatory", WebkitOverflowScrolling:"touch", scrollbarWidth:"none", msOverflowStyle:"none" },
+  calPage: { minWidth:"100%", flexShrink:0, scrollSnapAlign:"start" },
+  calNavRow: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 },
+  calNavBtn: { width:28, height:28, borderRadius:14, background:"rgba(0,0,0,0.06)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:700, color:"#555", cursor:"pointer", userSelect:"none" },
+  dayDots: { display:"flex", gap:3, height:5 }, dot:{ width:5, height:5, borderRadius:3 },
+  calEvents: { marginTop:11, paddingTop:11, borderTop:"1px solid rgba(0,0,0,0.05)" },
+  calEv: { display:"flex", alignItems:"center", gap:10 },
+  calEvTime: { fontSize:11, fontWeight:700, color:"#6a6a7a", width:42 },
+  calEvBar: { width:3, height:26, borderRadius:2 },
+  calEvTitle: { fontSize:12.5, fontWeight:600, color:"#1a1a24" }, calEvMeta:{ fontSize:10, color:"#a0a0b0", marginTop:1 },
+  boxHead: { padding:"12px 24px 10px", fontSize:12, fontWeight:800, letterSpacing:"0.08em", color:"#16161e" },
+  tabs: { display:"flex", gap:6, padding:"0 20px 12px", overflowX:"auto" },
+  tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
+  tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
+  tabDot: { width:7, height:7, borderRadius:"50%", flexShrink:0 }, tabLbl:{ fontSize:12, fontWeight:600, color:"#6a6a7a" },
+  wall: { padding:"2px 18px 150px", columns:2, columnGap:12 },
+  card: { breakInside:"avoid", marginBottom:12, borderRadius:22, background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", cursor:"pointer", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
+  hero: { height:84, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:13 },
+  heroGlow: { position:"absolute", top:-30, right:-20, width:80, height:80, borderRadius:"50%", background:"radial-gradient(circle,rgba(255,255,255,0.5),transparent 70%)" },
+  cardCat: { position:"absolute", top:13, left:14, fontSize:8.5, fontWeight:800, letterSpacing:"0.18em", color:"rgba(255,255,255,0.95)", textTransform:"uppercase" },
+  cardBody: { padding:"12px 14px 15px" },
+  cardTitle: { fontSize:13, fontWeight:700, color:"#1a1a24", lineHeight:1.45, marginBottom:5 },
+  cardMeta: { fontSize:10.5, color:"#9a9aaa" },
+  cardChip: { display:"inline-block", marginTop:9, padding:"5px 11px", borderRadius:100, fontSize:11, fontWeight:600 },
+  menu: { position:"absolute", inset:0, background:"rgba(255,255,255,0.96)", backdropFilter:"blur(10px)", padding:12, display:"flex", flexDirection:"column", gap:2, justifyContent:"center" },
+  menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
+  menuItem: { display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
+  menuDel: { marginTop:6, padding:"6px 10px", borderRadius:10, fontSize:11, fontWeight:600, color:"#f0436c", textAlign:"center", cursor:"pointer", background:"rgba(255,94,138,0.08)" },
+  dock: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", padding:"16px 24px 30px", background:"linear-gradient(to top,rgba(246,246,248,0.96) 55%,transparent)" },
+  drop: { height:56, borderRadius:19, background:"linear-gradient(120deg,#16161e,#34344a)", display:"flex", alignItems:"center", justifyContent:"center", gap:9, cursor:"pointer", boxShadow:"0 12px 32px rgba(30,30,50,0.35)" },
+  dropPlus: { fontSize:20, fontWeight:300, color:"#fff" }, dropTxt:{ fontSize:15, fontWeight:700, color:"#fff" },
+  sheetWrap: { position:"fixed", inset:0, background:"rgba(10,10,20,0.4)", backdropFilter:"blur(4px)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:100 },
+  sheet: { width:"100%", maxWidth:440, background:"#fbfbfd", borderRadius:"28px 28px 0 0", padding:"12px 22px 30px", maxHeight:"88%", overflowY:"auto", boxShadow:"0 -10px 40px rgba(0,0,0,0.2)" },
+  sheetGrip: { width:38, height:5, borderRadius:3, background:"#ddd", margin:"0 auto 16px" },
+  sheetTitle: { fontSize:18, fontWeight:800, color:"#16161e", marginBottom:4, letterSpacing:"-0.02em" },
+  sheetSub: { fontSize:12, color:"#9a9aaa", marginBottom:16, lineHeight:1.6 },
+  textarea: { width:"100%", minHeight:100, borderRadius:16, border:"1px solid #e8e8ee", background:"#fff", padding:14, fontSize:13, fontFamily:"inherit", color:"#1a1a24", resize:"none", outline:"none", lineHeight:1.6 },
+  error: { color:"#f0436c", fontSize:12, marginTop:8, lineHeight:1.5 },
+  sheetBtns: { display:"flex", gap:10, marginTop:14 },
+  btnGhost: { flex:1, height:50, borderRadius:15, border:"1px solid #e8e8ee", background:"#fff", fontSize:14, fontWeight:600, color:"#888", cursor:"pointer" },
+  btnMain: { flex:2, height:50, borderRadius:15, border:"none", background:"linear-gradient(120deg,#16161e,#34344a)", fontSize:14, fontWeight:700, color:"#fff", cursor:"pointer" },
+  samples: { marginTop:20 },
+  samplesLabel: { fontSize:11, fontWeight:700, color:"#aaa", marginBottom:8 },
+  sampleChip: { padding:"9px 13px", borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#666", marginBottom:6, cursor:"pointer", border:"1px solid #ececf0" },
+  preview: { borderRadius:18, overflow:"hidden", border:"1px solid #eee", background:"#fff", marginBottom:16, boxShadow:"0 4px 16px rgba(0,0,0,0.06)" },
+  previewHero: { height:72, position:"relative", display:"flex", alignItems:"flex-end", padding:13 },
+  reclassLabel: { fontSize:11, fontWeight:700, color:"#aaa", marginBottom:8 },
+  reclass: { display:"flex", gap:6, flexWrap:"wrap", marginBottom:4 },
+  reclassChip: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, border:"1px solid #e8e8ee", background:"#fff", fontSize:12, fontWeight:600, color:"#666", cursor:"pointer" },
+  photoBtn: { marginTop:10, height:52, borderRadius:14, border:"1.5px dashed #d8d8e2", background:"#fafafb", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontSize:13, fontWeight:600, color:"#888", cursor:"pointer" },
+  photoPreview: { marginTop:10, padding:10, borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", display:"flex", alignItems:"center", gap:12 },
+  photoThumb: { width:48, height:48, borderRadius:10, objectFit:"cover", flexShrink:0 },
+  photoX: { width:26, height:26, borderRadius:13, background:"#f2f2f6", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#999", cursor:"pointer", flexShrink:0 },
+  previewImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
+  cardHeroImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
+  cardLink: { display:"inline-flex", alignItems:"center", gap:3, marginTop:8, padding:"4px 9px", borderRadius:8, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:10.5, fontWeight:700, textDecoration:"none" },
+  cardImgBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, padding:"4px 9px", borderRadius:8, background:"rgba(100,100,150,0.1)", color:"#6a6a7a", fontSize:10.5, fontWeight:700, cursor:"pointer" },
+  lbWrap: { position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center" },
+  lbImg: { maxWidth:"92%", maxHeight:"80vh", borderRadius:16, objectFit:"contain" },
+  lbClose: { position:"absolute", top:28, right:24, width:36, height:36, borderRadius:18, background:"rgba(255,255,255,0.18)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, cursor:"pointer", fontWeight:700 },
+  lensHint: { position:"absolute", bottom:10, right:12, fontSize:14, opacity:0.85, filter:"drop-shadow(0 1px 3px rgba(0,0,0,0.4))" },
+  scanOverlay: { position:"absolute", inset:0, borderRadius:"inherit", overflow:"hidden", zIndex:10 },
+  scanLine: { position:"absolute", left:0, right:0, height:3, background:"linear-gradient(90deg,transparent,rgba(80,220,255,0.9),rgba(255,255,255,1),rgba(80,220,255,0.9),transparent)", boxShadow:"0 0 12px 4px rgba(80,220,255,0.7)", animation:"nbScan 0.65s ease-in forwards", top:0 },
+  sparkle: { position:"absolute", fontSize:11, color:"#fff", textShadow:"0 0 6px rgba(100,220,255,0.9)", animation:"nbSparkle 0.6s ease-out forwards", pointerEvents:"none" },
+  scanRipple: { position:"absolute", top:"50%", left:"50%", width:32, height:32, marginTop:-16, marginLeft:-16, borderRadius:"50%", border:"2.5px solid rgba(80,220,255,0.9)", animation:"nbRipple 0.65s ease-out forwards" },
+  scanFlash: { position:"absolute", inset:0, background:"rgba(200,240,255,0.35)", animation:"nbFlash 0.65s ease-out forwards" },
+  fieldLabel: { fontSize:11, fontWeight:700, color:"#888", margin:"10px 0 6px" },
+  select: { width:"100%", height:46, borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:13, color:"#1a1a24", outline:"none" },
+  dateInput: { width:"100%", height:46, borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:13, color:"#1a1a24", outline:"none", marginBottom:10 },
+  help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

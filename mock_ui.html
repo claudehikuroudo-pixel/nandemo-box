@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>気になる箱 UIモック</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  background:#0a0a0a;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  min-height:100vh;
+  padding:24px 16px;
+  font-family:-apple-system,'Hiragino Sans',sans-serif;
+}
+
+.phone {
+  width:100%;
+  max-width:375px;
+  min-height:780px;
+  background:#f5f4f0;
+  border-radius:48px;
+  overflow:hidden;
+  position:relative;
+  box-shadow:0 40px 100px rgba(0,0,0,0.7);
+  border:2px solid #222;
+}
+
+/* ── ステータスバー ── */
+.statusbar {
+  height:48px;
+  background:#f5f4f0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:0 24px;
+}
+.statusbar-time { font-size:15px; font-weight:700; color:#111; }
+.statusbar-icons { font-size:12px; color:#111; }
+
+/* ── ヘッダー ── */
+.header {
+  padding:4px 20px 12px;
+  background:#f5f4f0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.app-title {
+  font-size:26px;
+  font-weight:800;
+  color:#111;
+  letter-spacing:-0.04em;
+}
+.app-title span { color:#5a4fcf; }
+.header-right {
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+.header-search {
+  width:36px; height:36px;
+  background:#e8e7e3;
+  border-radius:18px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:15px;
+}
+
+/* ── タブバー ── */
+.tabbar {
+  display:flex;
+  padding:0 16px 8px;
+  gap:6px;
+  background:#f5f4f0;
+}
+.tab {
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:3px;
+  padding:8px 4px 6px;
+  border-radius:14px;
+  cursor:pointer;
+  transition:all 0.18s ease;
+  position:relative;
+  border:1.5px solid transparent;
+}
+.tab.active {
+  background:#fff;
+  border-color:#e0ddf8;
+  box-shadow:0 2px 8px rgba(90,79,207,0.12);
+}
+.tab-icon { font-size:20px; line-height:1; }
+.tab-name {
+  font-size:9px;
+  font-weight:600;
+  color:#aaa;
+  letter-spacing:0.02em;
+}
+.tab.active .tab-name { color:#5a4fcf; }
+.tab-badge {
+  position:absolute;
+  top:4px; right:6px;
+  background:#ff4b4b;
+  color:#fff;
+  font-size:8px;
+  font-weight:800;
+  border-radius:8px;
+  padding:1px 5px;
+  line-height:1.4;
+}
+
+/* ── ウォールグリッド ── */
+.wall {
+  padding:8px 14px 100px;
+  columns:2;
+  column-gap:8px;
+  overflow-y:auto;
+  height:calc(100% - 200px);
+  max-height:540px;
+}
+.card {
+  break-inside:avoid;
+  border-radius:18px;
+  margin-bottom:8px;
+  overflow:hidden;
+  background:#fff;
+  box-shadow:0 2px 8px rgba(0,0,0,0.06);
+  cursor:pointer;
+  transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);
+  transform:scale(1);
+  opacity:1;
+}
+.card:active { transform:scale(0.96); }
+
+/* フィルタ時 */
+.card.hidden {
+  transform:scale(0.85);
+  opacity:0;
+  pointer-events:none;
+  margin-bottom:0;
+  height:0;
+  padding:0;
+}
+
+.card-thumb {
+  width:100%;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:36px;
+  padding:20px 0 12px;
+}
+.card-body { padding:0 12px 14px; }
+.card-cat {
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:0.1em;
+  text-transform:uppercase;
+  margin-bottom:3px;
+}
+.card-title {
+  font-size:12px;
+  font-weight:600;
+  color:#111;
+  line-height:1.4;
+  margin-bottom:2px;
+}
+.card-meta { font-size:10px; color:#999; }
+.card-date-chip {
+  display:inline-block;
+  margin-top:6px;
+  padding:3px 8px;
+  border-radius:8px;
+  font-size:9px;
+  font-weight:700;
+}
+
+/* カテゴリ色 */
+.cat-event .card-cat { color:#e05252; }
+.cat-event .card-date-chip { background:#ffe8e8; color:#e05252; }
+.cat-task .card-cat { color:#7c5cbf; }
+.cat-task .card-date-chip { background:#ede8f8; color:#7c5cbf; }
+.cat-mono .card-cat { color:#c48a1f; }
+.cat-mono .card-date-chip { background:#fef5dc; color:#c48a1f; }
+.cat-basho .card-cat { color:#3a9e5f; }
+.cat-basho .card-date-chip { background:#e4f5eb; color:#3a9e5f; }
+.cat-joho .card-cat { color:#2f7bc4; }
+.cat-joho .card-date-chip { background:#e2f0fc; color:#2f7bc4; }
+
+/* ── 浮上バナー ── */
+.float-banner {
+  position:absolute;
+  bottom:76px;
+  left:14px; right:14px;
+  background:linear-gradient(135deg,#5a4fcf,#9b59b6);
+  border-radius:18px;
+  padding:12px 14px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  box-shadow:0 8px 24px rgba(90,79,207,0.35);
+  z-index:30;
+  cursor:pointer;
+}
+.float-banner-icon { font-size:20px; }
+.float-banner-body { flex:1; }
+.float-banner-title { font-size:11px; font-weight:700; color:#fff; margin-bottom:1px; }
+.float-banner-sub { font-size:10px; color:rgba(255,255,255,0.7); }
+.float-banner-close {
+  color:rgba(255,255,255,0.5);
+  font-size:14px;
+  padding:4px;
+}
+
+/* ── 追加ボタン ── */
+.fab {
+  position:absolute;
+  bottom:16px;
+  left:50%;
+  transform:translateX(-50%);
+  background:#5a4fcf;
+  color:#fff;
+  border-radius:28px;
+  padding:14px 36px;
+  font-size:15px;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  box-shadow:0 6px 24px rgba(90,79,207,0.45);
+  white-space:nowrap;
+  z-index:40;
+  cursor:pointer;
+  transition:transform 0.15s;
+}
+.fab:active { transform:translateX(-50%) scale(0.96); }
+
+/* ── フィルタ状態ラベル ── */
+.filter-label {
+  text-align:center;
+  font-size:10px;
+  color:#aaa;
+  padding:0 0 6px;
+  min-height:20px;
+  transition:opacity 0.2s;
+}
+</style>
+</head>
+<body>
+
+<div class="phone" id="phone">
+
+  <!-- ステータスバー -->
+  <div class="statusbar">
+    <span class="statusbar-time">9:41</span>
+    <span class="statusbar-icons">●●● 🔋</span>
+  </div>
+
+  <!-- ヘッダー -->
+  <div class="header">
+    <div class="app-title">気になる<span>箱</span></div>
+    <div class="header-right">
+      <div class="header-search">🔍</div>
+    </div>
+  </div>
+
+  <!-- タブバー -->
+  <div class="tabbar">
+    <div class="tab active" data-cat="all" onclick="filterCards(this,'all')">
+      <span class="tab-icon">✦</span>
+      <span class="tab-name">すべて</span>
+    </div>
+    <div class="tab" data-cat="event" onclick="filterCards(this,'event')">
+      <span class="tab-icon">📅</span>
+      <span class="tab-name">予定</span>
+      <span class="tab-badge">3</span>
+    </div>
+    <div class="tab" data-cat="task" onclick="filterCards(this,'task')">
+      <span class="tab-icon">✅</span>
+      <span class="tab-name">タスク</span>
+    </div>
+    <div class="tab" data-cat="mono" onclick="filterCards(this,'mono')">
+      <span class="tab-icon">🛍</span>
+      <span class="tab-name">モノ</span>
+    </div>
+    <div class="tab" data-cat="basho" onclick="filterCards(this,'basho')">
+      <span class="tab-icon">📍</span>
+      <span class="tab-name">場所</span>
+    </div>
+    <div class="tab" data-cat="joho" onclick="filterCards(this,'joho')">
+      <span class="tab-icon">📄</span>
+      <span class="tab-name">情報</span>
+    </div>
+  </div>
+
+  <!-- フィルタラベル -->
+  <div class="filter-label" id="filterLabel">32件 · すべて表示中</div>
+
+  <!-- ウォールグリッド -->
+  <div class="wall" id="wall">
+
+    <div class="card cat-event" data-cat="event">
+      <div class="card-thumb">📅</div>
+      <div class="card-body">
+        <div class="card-cat">予定</div>
+        <div class="card-title">AIゼミ・最前線</div>
+        <div class="card-meta">SHIFT AI</div>
+        <div class="card-date-chip">6/17 19:00〜</div>
+      </div>
+    </div>
+
+    <div class="card cat-mono" data-cat="mono">
+      <div class="card-thumb">⌚</div>
+      <div class="card-body">
+        <div class="card-cat">モノ</div>
+        <div class="card-title">G-SHOCK GW-B5600</div>
+        <div class="card-meta">¥28,600</div>
+        <div class="card-date-chip">3ヶ月前に保存</div>
+      </div>
+    </div>
+
+    <div class="card cat-task" data-cat="task">
+      <div class="card-thumb">✅</div>
+      <div class="card-body">
+        <div class="card-cat">タスク</div>
+        <div class="card-title">請求書をLIMUに送る</div>
+        <div class="card-date-chip">今週中</div>
+      </div>
+    </div>
+
+    <div class="card cat-basho" data-cat="basho">
+      <div class="card-thumb">🍶</div>
+      <div class="card-body">
+        <div class="card-cat">場所</div>
+        <div class="card-title">渋谷の角打ち バー</div>
+        <div class="card-meta">渋谷・道玄坂</div>
+        <div class="card-date-chip">行きたい</div>
+      </div>
+    </div>
+
+    <div class="card cat-event" data-cat="event">
+      <div class="card-thumb">🎓</div>
+      <div class="card-body">
+        <div class="card-cat">予定</div>
+        <div class="card-title">スライド作成AIゼミ</div>
+        <div class="card-meta">SHIFT AI</div>
+        <div class="card-date-chip">6/17 20:00〜</div>
+      </div>
+    </div>
+
+    <div class="card cat-joho" data-cat="joho">
+      <div class="card-thumb">📱</div>
+      <div class="card-body">
+        <div class="card-cat">情報</div>
+        <div class="card-title">Claude Code 活用術まとめ</div>
+        <div class="card-meta">note記事</div>
+      </div>
+    </div>
+
+    <div class="card cat-mono" data-cat="mono">
+      <div class="card-thumb">🎮</div>
+      <div class="card-body">
+        <div class="card-cat">モノ</div>
+        <div class="card-title">Switch 新作タイトル</div>
+        <div class="card-meta">¥6,980</div>
+        <div class="card-date-chip">発売前</div>
+      </div>
+    </div>
+
+    <div class="card cat-event" data-cat="event">
+      <div class="card-thumb">🥊</div>
+      <div class="card-body">
+        <div class="card-cat">予定</div>
+        <div class="card-title">格闘技セミナー@横浜</div>
+        <div class="card-meta">鶴見道場</div>
+        <div class="card-date-chip">6/21 14:00〜</div>
+      </div>
+    </div>
+
+    <div class="card cat-basho" data-cat="basho">
+      <div class="card-thumb">🌋</div>
+      <div class="card-body">
+        <div class="card-cat">場所</div>
+        <div class="card-title">屋久島・縄文杉</div>
+        <div class="card-meta">鹿児島県</div>
+        <div class="card-date-chip">いつか行く</div>
+      </div>
+    </div>
+
+    <div class="card cat-task" data-cat="task">
+      <div class="card-thumb">📦</div>
+      <div class="card-body">
+        <div class="card-cat">タスク</div>
+        <div class="card-title">KAISINミット 商品写真を撮る</div>
+        <div class="card-date-chip">来週まで</div>
+      </div>
+    </div>
+
+    <div class="card cat-joho" data-cat="joho">
+      <div class="card-thumb">📊</div>
+      <div class="card-body">
+        <div class="card-cat">情報</div>
+        <div class="card-title">A10アルゴリズム 解説動画</div>
+        <div class="card-meta">YouTube</div>
+      </div>
+    </div>
+
+    <div class="card cat-mono" data-cat="mono">
+      <div class="card-thumb">👟</div>
+      <div class="card-body">
+        <div class="card-cat">モノ</div>
+        <div class="card-title">Adidas Samba OG 黒</div>
+        <div class="card-meta">¥16,500</div>
+        <div class="card-date-chip">セール待ち</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 浮上バナー -->
+  <div class="float-banner" id="floatBanner">
+    <div class="float-banner-icon">✨</div>
+    <div class="float-banner-body">
+      <div class="float-banner-title">3ヶ月前の「渋谷バー」、今週末空いてますよ</div>
+      <div class="float-banner-sub">土曜の夜 · 予定なし</div>
+    </div>
+    <div class="float-banner-close" onclick="document.getElementById('floatBanner').style.display='none'">✕</div>
+  </div>
+
+  <!-- 追加ボタン -->
+  <div class="fab">＋ 気になるを追加</div>
+
+</div>
+
+<script>
+const labels = {
+  all:   '12件 · すべて表示中',
+  event: '3件 · 予定だけ表示',
+  task:  '2件 · タスクだけ表示',
+  mono:  '3件 · モノだけ表示',
+  basho: '2件 · 場所だけ表示',
+  joho:  '2件 · 情報だけ表示',
+};
+
+function filterCards(tabEl, cat) {
+  // タブ切り替え
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+
+  // カード切り替え（アニメーション）
+  document.querySelectorAll('.card').forEach(card => {
+    const match = cat === 'all' || card.dataset.cat === cat;
+    if (match) {
+      card.classList.remove('hidden');
+    } else {
+      card.classList.add('hidden');
+    }
+  });
+
+  // ラベル更新
+  document.getElementById('filterLabel').textContent = labels[cat] || '';
+
+  // バナーは「すべて」以外では隠す
+  const banner = document.getElementById('floatBanner');
+  banner.style.display = (cat === 'all') ? 'flex' : 'none';
+}
+</script>
+
+</body>
+</html>

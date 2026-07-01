@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>なんでも箱</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Inter:wght@400;500;600;700;800;900&display=swap');
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  background:
+    radial-gradient(circle at 20% 10%, #ffe8f0 0%, transparent 45%),
+    radial-gradient(circle at 85% 25%, #e8f0ff 0%, transparent 50%),
+    radial-gradient(circle at 50% 90%, #fff0e0 0%, transparent 45%),
+    #f5f5f7;
+  display:flex; justify-content:center; align-items:flex-start;
+  min-height:100vh; padding:32px 16px;
+  font-family:'Inter','Zen Kaku Gothic New',-apple-system,sans-serif;
+}
+
+.phone {
+  width:380px; height:824px; border-radius:54px; overflow:hidden; position:relative;
+  background:
+    radial-gradient(circle at 25% 6%, rgba(255,180,210,0.35) 0%, transparent 38%),
+    radial-gradient(circle at 88% 18%, rgba(150,190,255,0.32) 0%, transparent 42%),
+    radial-gradient(circle at 55% 96%, rgba(255,200,140,0.28) 0%, transparent 40%),
+    #f6f6f8;
+  box-shadow:0 50px 130px rgba(80,80,120,0.35), inset 0 0 0 1px rgba(255,255,255,0.6);
+  border:1px solid rgba(255,255,255,0.5);
+}
+
+.sb { height:50px; display:flex; align-items:center; justify-content:space-between; padding:0 30px; }
+.sb-t { font-size:15px; font-weight:600; color:#1a1a2e; }
+.sb-i { font-size:11px; color:#1a1a2e; letter-spacing:1px; }
+
+.hd { padding:8px 28px 14px; }
+.hd-name { font-size:28px; font-weight:900; color:#16161e; letter-spacing:-0.04em; margin-bottom:3px; }
+.hd-name .accent { background:linear-gradient(120deg,#ff6b9d,#a06bff,#56c4ff); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+.hd-sub { font-size:12.5px; color:#8a8a9a; font-weight:500; }
+
+/* ═══ 今日の予定の帯（常時表示）═══ */
+.today {
+  padding:2px 0 16px;
+}
+.today-head {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 26px 9px;
+}
+.today-label {
+  font-size:11px; font-weight:800; letter-spacing:0.1em;
+  color:#16161e; text-transform:uppercase;
+  display:flex; align-items:center; gap:7px;
+}
+.today-label::before {
+  content:''; width:7px; height:7px; border-radius:50%;
+  background:linear-gradient(135deg,#ff5e8a,#ff8a6b);
+  box-shadow:0 0 8px rgba(255,94,138,0.6);
+}
+.today-all { font-size:11px; color:#a0a0b0; font-weight:600; }
+
+.today-scroll {
+  display:flex; gap:11px; padding:0 26px; overflow-x:auto;
+  scrollbar-width:none; scroll-snap-type:x mandatory;
+}
+.today-scroll::-webkit-scrollbar { display:none; }
+
+.ev {
+  flex-shrink:0; width:172px; scroll-snap-align:start;
+  border-radius:20px; padding:14px 15px;
+  background:rgba(255,255,255,0.78);
+  backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px);
+  border:1px solid rgba(255,255,255,0.9);
+  box-shadow:0 6px 22px rgba(100,100,150,0.12);
+  position:relative; overflow:hidden; cursor:pointer;
+  transition:transform 0.2s;
+}
+.ev:active { transform:scale(0.97); }
+.ev::before {
+  content:''; position:absolute; left:0; top:0; bottom:0; width:4px;
+}
+.ev.now::before { background:linear-gradient(180deg,#ff5e8a,#ff8a6b); }
+.ev.next::before { background:linear-gradient(180deg,#9b6bff,#6b8bff); }
+.ev-when {
+  font-size:11px; font-weight:700; font-variant-numeric:tabular-nums;
+  margin-bottom:6px; display:flex; align-items:center; gap:6px;
+}
+.ev.now .ev-when { color:#f0436c; }
+.ev.next .ev-when { color:#8b54f5; }
+.ev-badge {
+  font-size:8.5px; font-weight:800; letter-spacing:0.08em;
+  padding:2px 7px; border-radius:100px; text-transform:uppercase;
+}
+.ev.now .ev-badge { background:rgba(255,94,138,0.15); color:#f0436c; }
+.ev.next .ev-badge { background:rgba(155,107,255,0.15); color:#8b54f5; }
+.ev-title { font-size:13.5px; font-weight:700; color:#1a1a24; line-height:1.4; margin-bottom:4px; }
+.ev-meta { font-size:11px; color:#9a9aaa; }
+
+/* ═══ タブ ═══ */
+.tabs { display:flex; gap:8px; padding:2px 22px 16px; overflow-x:auto; scrollbar-width:none; }
+.tabs::-webkit-scrollbar { display:none; }
+.tab {
+  display:flex; align-items:center; gap:7px; padding:9px 14px; border-radius:100px;
+  background:rgba(255,255,255,0.65);
+  backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.8);
+  box-shadow:0 2px 10px rgba(100,100,140,0.08);
+  cursor:pointer; white-space:nowrap;
+  transition:all 0.3s cubic-bezier(0.34,1.45,0.5,1);
+}
+.tab-dot { width:8px; height:8px; border-radius:50%; }
+.tab-lbl { font-size:12.5px; font-weight:600; color:#6a6a7a; }
+.tab.on { transform:scale(1.04); }
+.tab.on .tab-lbl { color:#fff; }
+.tab.on .tab-dot { background:#fff !important; }
+.tab.on[data-c="all"]   { background:linear-gradient(120deg,#16161e,#3a3a4e); border-color:transparent; }
+.tab.on[data-c="event"] { background:linear-gradient(120deg,#ff5e8a,#ff8a6b); border-color:transparent; }
+.tab.on[data-c="task"]  { background:linear-gradient(120deg,#9b6bff,#6b8bff); border-color:transparent; }
+.tab.on[data-c="mono"]  { background:linear-gradient(120deg,#ffb627,#ff8a3d); border-color:transparent; }
+.tab.on[data-c="basho"] { background:linear-gradient(120deg,#2fd87a,#1fc0a0); border-color:transparent; }
+.tab.on[data-c="joho"]  { background:linear-gradient(120deg,#37b6ff,#5a8bff); border-color:transparent; }
+
+/* ═══ ウォール ═══ */
+.wall { padding:4px 20px 140px; columns:2; column-gap:13px; overflow-y:auto; height:calc(100% - 350px); scrollbar-width:none; }
+.wall::-webkit-scrollbar { display:none; }
+.card {
+  break-inside:avoid; margin-bottom:13px; border-radius:24px;
+  background:rgba(255,255,255,0.72);
+  backdrop-filter:blur(30px); -webkit-backdrop-filter:blur(30px);
+  border:1px solid rgba(255,255,255,0.9); overflow:hidden; cursor:pointer; position:relative;
+  box-shadow:0 8px 26px rgba(100,100,150,0.12), inset 0 1px 0 rgba(255,255,255,0.9);
+  transition:transform 0.35s cubic-bezier(0.34,1.45,0.5,1);
+  animation:pop 0.55s cubic-bezier(0.34,1.5,0.5,1) backwards;
+}
+@keyframes pop { from{opacity:0;transform:translateY(-12px) scale(0.94)} to{opacity:1;transform:none} }
+.card:active { transform:scale(0.96); }
+.card.hide { display:none; }
+.card-hero { height:96px; position:relative; overflow:hidden; display:flex; align-items:flex-end; padding:14px; }
+.card-tall .card-hero { height:140px; }
+.hero-event { background:linear-gradient(145deg,#ff6b9d,#ff8f6b); }
+.hero-task  { background:linear-gradient(145deg,#a06bff,#6b8bff); }
+.hero-mono  { background:linear-gradient(145deg,#ffc247,#ff9a3d); }
+.hero-basho { background:linear-gradient(145deg,#3fe08a,#1fc8b0); }
+.hero-joho  { background:linear-gradient(145deg,#47bfff,#6b9aff); }
+.card-hero::before { content:''; position:absolute; top:-30px; right:-20px; width:90px; height:90px; border-radius:50%; background:radial-gradient(circle, rgba(255,255,255,0.5), transparent 70%); }
+.card-cat { position:absolute; top:14px; left:15px; font-size:9px; font-weight:800; letter-spacing:0.18em; color:rgba(255,255,255,0.95); text-transform:uppercase; }
+.card-num { font-size:12px; font-weight:800; color:rgba(255,255,255,0.9); font-variant-numeric:tabular-nums; }
+.card-body { padding:13px 15px 16px; }
+.card-title { font-size:13.5px; font-weight:700; color:#1a1a24; line-height:1.5; margin-bottom:5px; }
+.card-meta { font-size:11px; color:#9a9aaa; }
+.card-chip { display:inline-block; margin-top:10px; padding:6px 12px; border-radius:100px; font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+.chip-event { background:rgba(255,94,138,0.13); color:#f0436c; }
+.chip-task  { background:rgba(155,107,255,0.13); color:#8b54f5; }
+.chip-mono  { background:rgba(255,182,39,0.16); color:#d18908; }
+.chip-basho { background:rgba(47,216,122,0.14); color:#1aa85c; }
+.chip-joho  { background:rgba(55,182,255,0.14); color:#1690d8; }
+
+.dock { position:absolute; bottom:0; left:0; right:0; padding:18px 26px 32px; background:linear-gradient(to top, rgba(246,246,248,0.95) 55%, transparent); }
+.drop { height:58px; border-radius:20px; background:linear-gradient(120deg,#16161e,#34344a); display:flex; align-items:center; justify-content:center; gap:9px; cursor:pointer; transition:transform 0.15s; box-shadow:0 12px 32px rgba(30,30,50,0.35), inset 0 1px 0 rgba(255,255,255,0.15); }
+.drop:active { transform:scale(0.98); }
+.drop-plus { font-size:21px; font-weight:300; color:#fff; }
+.drop-txt { font-size:16px; font-weight:700; color:#fff; letter-spacing:0.02em; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="sb"><span class="sb-t">9:41</span><span class="sb-i">●●● ⛁</span></div>
+  <div class="hd">
+    <div class="hd-name">なんでも<span class="accent">箱</span></div>
+    <div class="hd-sub">放り込むだけ。あとは、箱が。</div>
+  </div>
+
+  <!-- 今日の予定の帯（常時表示） -->
+  <div class="today">
+    <div class="today-head">
+      <div class="today-label">今日の予定</div>
+      <div class="today-all">すべて見る ›</div>
+    </div>
+    <div class="today-scroll">
+      <div class="ev now">
+        <div class="ev-when"><span class="ev-badge">あと2時間</span></div>
+        <div class="ev-title">AIゼミ・最前線</div>
+        <div class="ev-meta">19:00〜 · オンライン</div>
+      </div>
+      <div class="ev next">
+        <div class="ev-when"><span class="ev-badge">今夜</span></div>
+        <div class="ev-title">スライド作成AIゼミ</div>
+        <div class="ev-meta">20:00〜 · オンライン</div>
+      </div>
+      <div class="ev next">
+        <div class="ev-when"><span class="ev-badge">土曜</span></div>
+        <div class="ev-title">格闘技セミナー@横浜</div>
+        <div class="ev-meta">6/21 14:00〜</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- タブ -->
+  <div class="tabs">
+    <div class="tab on" data-c="all" onclick="f(this,'all')"><span class="tab-dot" style="background:#16161e"></span><span class="tab-lbl">すべて</span></div>
+    <div class="tab" data-c="event" onclick="f(this,'event')"><span class="tab-dot" style="background:#ff5e8a"></span><span class="tab-lbl">予定</span></div>
+    <div class="tab" data-c="task" onclick="f(this,'task')"><span class="tab-dot" style="background:#9b6bff"></span><span class="tab-lbl">タスク</span></div>
+    <div class="tab" data-c="mono" onclick="f(this,'mono')"><span class="tab-dot" style="background:#ffb627"></span><span class="tab-lbl">モノ</span></div>
+    <div class="tab" data-c="basho" onclick="f(this,'basho')"><span class="tab-dot" style="background:#2fd87a"></span><span class="tab-lbl">場所</span></div>
+    <div class="tab" data-c="joho" onclick="f(this,'joho')"><span class="tab-dot" style="background:#37b6ff"></span><span class="tab-lbl">情報</span></div>
+  </div>
+
+  <!-- ウォール -->
+  <div class="wall" id="wall">
+    <div class="card" data-c="mono" style="animation-delay:.03s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">01</span></div><div class="card-body"><div class="card-title">G-SHOCK GW-B5600</div><span class="card-chip chip-mono">¥28,600</span></div></div>
+    <div class="card" data-c="task" style="animation-delay:.06s"><div class="card-hero hero-task"><span class="card-cat">Task</span><span class="card-num">02</span></div><div class="card-body"><div class="card-title">請求書をLIMUに送る</div><span class="card-chip chip-task">今週中</span></div></div>
+    <div class="card card-tall" data-c="basho" style="animation-delay:.09s"><div class="card-hero hero-basho"><span class="card-cat">Place</span><span class="card-num">03</span></div><div class="card-body"><div class="card-title">渋谷の角打ちバー</div><div class="card-meta">道玄坂・徒歩5分</div><span class="card-chip chip-basho">行きたい</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.12s"><div class="card-hero hero-joho"><span class="card-cat">Info</span><span class="card-num">04</span></div><div class="card-body"><div class="card-title">Claude Code 活用術まとめ</div><div class="card-meta">note記事</div></div></div>
+    <div class="card card-tall" data-c="mono" style="animation-delay:.15s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">05</span></div><div class="card-body"><div class="card-title">Adidas Samba OG</div><div class="card-meta">スニーカー</div><span class="card-chip chip-mono">セール待ち</span></div></div>
+    <div class="card" data-c="basho" style="animation-delay:.18s"><div class="card-hero hero-basho"><span class="card-cat">Place</span><span class="card-num">06</span></div><div class="card-body"><div class="card-title">屋久島・縄文杉</div><span class="card-chip chip-basho">いつか</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.21s"><div class="card-hero hero-joho"><span class="card-cat">Info</span><span class="card-num">07</span></div><div class="card-body"><div class="card-title">A10アルゴリズム解説</div><div class="card-meta">YouTube</div></div></div>
+    <div class="card" data-c="task" style="animation-delay:.24s"><div class="card-hero hero-task"><span class="card-cat">Task</span><span class="card-num">08</span></div><div class="card-body"><div class="card-title">KAISIN商品写真を撮る</div><span class="card-chip chip-task">来週まで</span></div></div>
+    <div class="card" data-c="mono" style="animation-delay:.27s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">09</span></div><div class="card-body"><div class="card-title">Switch 新作</div><span class="card-chip chip-mono">発売前</span></div></div>
+  </div>
+
+  <div class="dock"><div class="drop"><span class="drop-plus">＋</span><span class="drop-txt">放り込む</span></div></div>
+</div>
+<script>
+function f(el,c){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('.card').forEach((r,i)=>{
+    const s=c==='all'||r.dataset.c===c;
+    if(s){r.classList.remove('hide');r.style.animation='none';void r.offsetWidth;r.style.animation=`pop .5s cubic-bezier(0.34,1.5,0.5,1) ${i*0.035}s backwards`;}
+    else r.classList.add('hide');
+  });
+}
+</script>
+</body>
+</html>

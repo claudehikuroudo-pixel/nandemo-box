@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>なんでも箱</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  /* iOSホーム画面のような淡いグラデ壁紙 */
+  background:
+    radial-gradient(circle at 20% 10%, #ffe8f0 0%, transparent 45%),
+    radial-gradient(circle at 85% 25%, #e8f0ff 0%, transparent 50%),
+    radial-gradient(circle at 50% 90%, #fff0e0 0%, transparent 45%),
+    #f5f5f7;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  min-height:100vh;
+  padding:32px 16px;
+  font-family:'Inter','Zen Kaku Gothic New',-apple-system,sans-serif;
+}
+
+.phone {
+  width:380px; height:824px;
+  border-radius:54px;
+  overflow:hidden;
+  position:relative;
+  /* 淡い壁紙が透ける */
+  background:
+    radial-gradient(circle at 25% 8%, rgba(255,180,210,0.35) 0%, transparent 40%),
+    radial-gradient(circle at 88% 22%, rgba(150,190,255,0.32) 0%, transparent 45%),
+    radial-gradient(circle at 55% 95%, rgba(255,200,140,0.28) 0%, transparent 42%),
+    #f6f6f8;
+  box-shadow:0 50px 130px rgba(80,80,120,0.35), inset 0 0 0 1px rgba(255,255,255,0.6);
+  border:1px solid rgba(255,255,255,0.5);
+}
+
+/* ステータスバー */
+.sb { height:50px; display:flex; align-items:center; justify-content:space-between; padding:0 30px; }
+.sb-t { font-size:15px; font-weight:600; color:#1a1a2e; }
+.sb-i { font-size:11px; color:#1a1a2e; letter-spacing:1px; }
+
+/* ヘッダー */
+.hd { padding:10px 28px 18px; }
+.hd-name {
+  font-size:30px; font-weight:900; color:#16161e;
+  letter-spacing:-0.04em; margin-bottom:4px;
+}
+.hd-name .accent {
+  background:linear-gradient(120deg,#ff6b9d,#a06bff,#56c4ff);
+  -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+.hd-sub { font-size:13px; color:#8a8a9a; font-weight:500; }
+
+/* タブ：ガラスのピル */
+.tabs {
+  display:flex; gap:8px; padding:2px 24px 18px;
+  overflow-x:auto; scrollbar-width:none;
+}
+.tabs::-webkit-scrollbar { display:none; }
+.tab {
+  display:flex; align-items:center; gap:7px;
+  padding:10px 15px; border-radius:100px;
+  background:rgba(255,255,255,0.65);
+  backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.8);
+  box-shadow:0 2px 10px rgba(100,100,140,0.08);
+  cursor:pointer; white-space:nowrap;
+  transition:all 0.3s cubic-bezier(0.34,1.45,0.5,1);
+}
+.tab-dot { width:8px; height:8px; border-radius:50%; box-shadow:0 0 6px currentColor; }
+.tab-lbl { font-size:13px; font-weight:600; color:#6a6a7a; }
+.tab.on { transform:scale(1.04); }
+.tab.on .tab-lbl { color:#fff; }
+.tab.on .tab-dot { background:#fff !important; box-shadow:0 0 8px rgba(255,255,255,0.8); }
+.tab.on[data-c="all"]   { background:linear-gradient(120deg,#16161e,#3a3a4e); border-color:transparent; }
+.tab.on[data-c="event"] { background:linear-gradient(120deg,#ff5e8a,#ff8a6b); border-color:transparent; box-shadow:0 6px 18px rgba(255,94,138,0.4); }
+.tab.on[data-c="task"]  { background:linear-gradient(120deg,#9b6bff,#6b8bff); border-color:transparent; box-shadow:0 6px 18px rgba(155,107,255,0.4); }
+.tab.on[data-c="mono"]  { background:linear-gradient(120deg,#ffb627,#ff8a3d); border-color:transparent; box-shadow:0 6px 18px rgba(255,182,39,0.4); }
+.tab.on[data-c="basho"] { background:linear-gradient(120deg,#2fd87a,#1fc0a0); border-color:transparent; box-shadow:0 6px 18px rgba(47,216,122,0.4); }
+.tab.on[data-c="joho"]  { background:linear-gradient(120deg,#37b6ff,#5a8bff); border-color:transparent; box-shadow:0 6px 18px rgba(55,182,255,0.4); }
+
+/* ウォール */
+.wall {
+  padding:4px 20px 140px; columns:2; column-gap:13px;
+  overflow-y:auto; height:calc(100% - 200px); scrollbar-width:none;
+}
+.wall::-webkit-scrollbar { display:none; }
+
+.card {
+  break-inside:avoid; margin-bottom:13px;
+  border-radius:26px;
+  background:rgba(255,255,255,0.72);
+  backdrop-filter:blur(30px); -webkit-backdrop-filter:blur(30px);
+  border:1px solid rgba(255,255,255,0.9);
+  overflow:hidden; cursor:pointer; position:relative;
+  box-shadow:0 8px 30px rgba(100,100,150,0.12), inset 0 1px 0 rgba(255,255,255,0.9);
+  transition:transform 0.35s cubic-bezier(0.34,1.45,0.5,1), box-shadow 0.35s;
+  animation:pop 0.55s cubic-bezier(0.34,1.5,0.5,1) backwards;
+}
+@keyframes pop { from{opacity:0;transform:translateY(-12px) scale(0.94)} to{opacity:1;transform:none} }
+.card:active { transform:scale(0.96); }
+.card.hide { display:none; }
+
+/* 色のかたまり：ガラスの上に光るグラデ球 */
+.card-hero {
+  height:104px; position:relative; overflow:hidden;
+  display:flex; align-items:flex-end; padding:15px;
+}
+.card-tall .card-hero { height:156px; }
+.hero-event { background:linear-gradient(145deg,#ff6b9d,#ff8f6b); }
+.hero-task  { background:linear-gradient(145deg,#a06bff,#6b8bff); }
+.hero-mono  { background:linear-gradient(145deg,#ffc247,#ff9a3d); }
+.hero-basho { background:linear-gradient(145deg,#3fe08a,#1fc8b0); }
+.hero-joho  { background:linear-gradient(145deg,#47bfff,#6b9aff); }
+/* 光沢の球 */
+.card-hero::before {
+  content:''; position:absolute; top:-30px; right:-20px;
+  width:90px; height:90px; border-radius:50%;
+  background:radial-gradient(circle, rgba(255,255,255,0.5), transparent 70%);
+}
+.card-cat {
+  position:absolute; top:15px; left:16px;
+  font-size:9px; font-weight:800; letter-spacing:0.18em;
+  color:rgba(255,255,255,0.95); text-transform:uppercase;
+  text-shadow:0 1px 3px rgba(0,0,0,0.1);
+}
+.card-num {
+  font-size:13px; font-weight:800; color:rgba(255,255,255,0.9);
+  font-variant-numeric:tabular-nums; letter-spacing:0.05em;
+  text-shadow:0 1px 3px rgba(0,0,0,0.1);
+}
+
+.card-body { padding:14px 16px 17px; }
+.card-title {
+  font-size:14px; font-weight:700; color:#1a1a24;
+  line-height:1.5; letter-spacing:-0.01em; margin-bottom:5px;
+}
+.card-meta { font-size:11.5px; color:#9a9aaa; line-height:1.4; }
+.card-chip {
+  display:inline-block; margin-top:11px;
+  padding:6px 12px; border-radius:100px;
+  font-size:11.5px; font-weight:600;
+  font-variant-numeric:tabular-nums;
+}
+.chip-event { background:rgba(255,94,138,0.13); color:#f0436c; }
+.chip-task  { background:rgba(155,107,255,0.13); color:#8b54f5; }
+.chip-mono  { background:rgba(255,182,39,0.16); color:#d18908; }
+.chip-basho { background:rgba(47,216,122,0.14); color:#1aa85c; }
+.chip-joho  { background:rgba(55,182,255,0.14); color:#1690d8; }
+
+/* 浮上：ガラスのバナー */
+.surface {
+  position:absolute; bottom:100px; left:20px; right:20px;
+  background:rgba(28,28,40,0.82);
+  backdrop-filter:blur(30px); -webkit-backdrop-filter:blur(30px);
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:24px; padding:15px 17px;
+  display:flex; align-items:center; gap:13px;
+  box-shadow:0 18px 50px rgba(60,60,100,0.35); cursor:pointer; z-index:20;
+}
+.surface-mark {
+  width:34px; height:34px; border-radius:11px; flex-shrink:0;
+  background:linear-gradient(135deg,#ff6b9d,#a06bff,#56c4ff);
+  box-shadow:0 4px 14px rgba(160,107,255,0.5);
+}
+.surface-body { flex:1; }
+.surface-lbl {
+  font-size:8.5px; font-weight:800; letter-spacing:0.18em;
+  text-transform:uppercase; color:#9a9ab0; margin-bottom:3px;
+}
+.surface-txt { font-size:12.5px; color:#f4f4f8; font-weight:500; line-height:1.4; }
+.surface-x { color:#888; font-size:15px; }
+
+/* ドック */
+.dock {
+  position:absolute; bottom:0; left:0; right:0;
+  padding:18px 26px 32px;
+  background:linear-gradient(to top, rgba(246,246,248,0.95) 55%, transparent);
+}
+.drop {
+  height:58px; border-radius:20px;
+  background:linear-gradient(120deg,#16161e,#34344a);
+  display:flex; align-items:center; justify-content:center; gap:9px;
+  cursor:pointer; transition:transform 0.15s;
+  box-shadow:0 12px 32px rgba(30,30,50,0.35), inset 0 1px 0 rgba(255,255,255,0.15);
+}
+.drop:active { transform:scale(0.98); }
+.drop-plus { font-size:21px; font-weight:300; color:#fff; }
+.drop-txt { font-size:16px; font-weight:700; color:#fff; letter-spacing:0.02em; }
+</style>
+</head>
+<body>
+
+<div class="phone">
+  <div class="sb"><span class="sb-t">9:41</span><span class="sb-i">●●● ⛁</span></div>
+
+  <div class="hd">
+    <div class="hd-name">なんでも<span class="accent">箱</span></div>
+    <div class="hd-sub">放り込むだけ。あとは、箱が。</div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab on" data-c="all" onclick="f(this,'all')"><span class="tab-dot" style="color:#16161e;background:#16161e"></span><span class="tab-lbl">すべて</span></div>
+    <div class="tab" data-c="event" onclick="f(this,'event')"><span class="tab-dot" style="color:#ff5e8a;background:#ff5e8a"></span><span class="tab-lbl">予定</span></div>
+    <div class="tab" data-c="task" onclick="f(this,'task')"><span class="tab-dot" style="color:#9b6bff;background:#9b6bff"></span><span class="tab-lbl">タスク</span></div>
+    <div class="tab" data-c="mono" onclick="f(this,'mono')"><span class="tab-dot" style="color:#ffb627;background:#ffb627"></span><span class="tab-lbl">モノ</span></div>
+    <div class="tab" data-c="basho" onclick="f(this,'basho')"><span class="tab-dot" style="color:#2fd87a;background:#2fd87a"></span><span class="tab-lbl">場所</span></div>
+    <div class="tab" data-c="joho" onclick="f(this,'joho')"><span class="tab-dot" style="color:#37b6ff;background:#37b6ff"></span><span class="tab-lbl">情報</span></div>
+  </div>
+
+  <div class="wall" id="wall">
+    <div class="card card-tall" data-c="event" style="animation-delay:.03s"><div class="card-hero hero-event"><span class="card-cat">Event</span><span class="card-num">01</span></div><div class="card-body"><div class="card-title">AIゼミ・最前線</div><div class="card-meta">SHIFT AI ウェビナー</div><span class="card-chip chip-event">6/17 19:00</span></div></div>
+    <div class="card" data-c="mono" style="animation-delay:.06s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">02</span></div><div class="card-body"><div class="card-title">G-SHOCK GW-B5600</div><span class="card-chip chip-mono">¥28,600</span></div></div>
+    <div class="card" data-c="task" style="animation-delay:.09s"><div class="card-hero hero-task"><span class="card-cat">Task</span><span class="card-num">03</span></div><div class="card-body"><div class="card-title">請求書をLIMUに送る</div><span class="card-chip chip-task">今週中</span></div></div>
+    <div class="card card-tall" data-c="basho" style="animation-delay:.12s"><div class="card-hero hero-basho"><span class="card-cat">Place</span><span class="card-num">04</span></div><div class="card-body"><div class="card-title">渋谷の角打ちバー</div><div class="card-meta">道玄坂・徒歩5分</div><span class="card-chip chip-basho">行きたい</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.15s"><div class="card-hero hero-joho"><span class="card-cat">Info</span><span class="card-num">05</span></div><div class="card-body"><div class="card-title">Claude Code 活用術まとめ</div><div class="card-meta">note記事</div></div></div>
+    <div class="card" data-c="event" style="animation-delay:.18s"><div class="card-hero hero-event"><span class="card-cat">Event</span><span class="card-num">06</span></div><div class="card-body"><div class="card-title">格闘技セミナー@横浜</div><span class="card-chip chip-event">6/21 14:00</span></div></div>
+    <div class="card" data-c="mono" style="animation-delay:.21s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">07</span></div><div class="card-body"><div class="card-title">Adidas Samba OG</div><span class="card-chip chip-mono">セール待ち</span></div></div>
+    <div class="card card-tall" data-c="basho" style="animation-delay:.24s"><div class="card-hero hero-basho"><span class="card-cat">Place</span><span class="card-num">08</span></div><div class="card-body"><div class="card-title">屋久島・縄文杉</div><div class="card-meta">鹿児島県</div><span class="card-chip chip-basho">いつか</span></div></div>
+    <div class="card" data-c="joho" style="animation-delay:.27s"><div class="card-hero hero-joho"><span class="card-cat">Info</span><span class="card-num">09</span></div><div class="card-body"><div class="card-title">A10アルゴリズム解説</div><div class="card-meta">YouTube</div></div></div>
+    <div class="card" data-c="task" style="animation-delay:.30s"><div class="card-hero hero-task"><span class="card-cat">Task</span><span class="card-num">10</span></div><div class="card-body"><div class="card-title">KAISIN商品写真を撮る</div><span class="card-chip chip-task">来週まで</span></div></div>
+    <div class="card" data-c="mono" style="animation-delay:.33s"><div class="card-hero hero-mono"><span class="card-cat">Want</span><span class="card-num">11</span></div><div class="card-body"><div class="card-title">Switch 新作</div><span class="card-chip chip-mono">発売前</span></div></div>
+  </div>
+
+  <div class="surface" id="surface">
+    <div class="surface-mark"></div>
+    <div class="surface-body"><div class="surface-lbl">そういえば</div><div class="surface-txt">3ヶ月前の「渋谷バー」、今週末あいてますよ</div></div>
+    <div class="surface-x" onclick="event.stopPropagation();document.getElementById('surface').style.display='none'">✕</div>
+  </div>
+
+  <div class="dock"><div class="drop"><span class="drop-plus">＋</span><span class="drop-txt">放り込む</span></div></div>
+</div>
+
+<script>
+function f(el,c){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on');
+  document.querySelectorAll('.card').forEach((r,i)=>{
+    const s=c==='all'||r.dataset.c===c;
+    if(s){r.classList.remove('hide');r.style.animation='none';void r.offsetWidth;r.style.animation=`pop .5s cubic-bezier(0.34,1.5,0.5,1) ${i*0.035}s backwards`;}
+    else r.classList.add('hide');
+  });
+  document.getElementById('surface').style.display=(c==='all')?'flex':'none';
+}
+</script>
+</body>
+</html>
