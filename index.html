@@ -388,11 +388,25 @@ ${imgInstruction}
             })}
           </div>
           <div style={S.calEvents}>
-            <div style={S.calEv}>
-              <span style={S.calEvTime}>19:00</span>
-              <span style={{...S.calEvBar, background:"linear-gradient(180deg,#ff5e8a,#ff8a6b)"}}/>
-              <div><div style={S.calEvTitle}>オンライン勉強会</div><div style={S.calEvMeta}>AI活用 · オンライン</div></div>
-            </div>
+            {(() => {
+              const todayStr = toDateStr(today);
+              const dated = items.filter(it => it.date && it.date >= todayStr)
+                                 .sort((a,b) => a.date.localeCompare(b.date));
+              if (dated.length === 0) {
+                return <div style={{fontSize:11, color:"#b0b0be", textAlign:"center", padding:"2px 0"}}>予定・タスクを放り込むとここに並びます</div>;
+              }
+              return dated.slice(0,4).map(it => {
+                const c = CATS[it.category];
+                const [,m,d] = it.date.split("-");
+                return (
+                  <div key={it.id} style={S.calEv}>
+                    <span style={S.calEvTime}>{`${+m}/${+d}`}</span>
+                    <span style={{...S.calEvBar, background:c.grad}}/>
+                    <div><div style={S.calEvTitle}>{it.title}</div>{it.meta && <div style={S.calEvMeta}>{it.meta}</div>}</div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
 
