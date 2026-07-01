@@ -395,7 +395,7 @@ ${imgInstruction}
               const dated = items.filter(it => it.date && it.date >= todayStr)
                                  .sort((a,b) => a.date.localeCompare(b.date));
               if (dated.length === 0) {
-                return <div style={{fontSize:11, color:"#b0b0be", textAlign:"center", padding:"2px 0"}}>予定・タスクを放り込むとここに並びます</div>;
+                return <div style={{fontSize:12.5, fontWeight:600, color:"#8a8a9a", textAlign:"center", padding:"12px 10px", background:"rgba(120,120,150,0.06)", borderRadius:12, border:"1px dashed rgba(120,120,150,0.25)"}}>📥 予定・タスクを放り込むと、ここに表示されます</div>;
               }
               return dated.slice(0,4).map(it => {
                 const c = CATS[it.category];
