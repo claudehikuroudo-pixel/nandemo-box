@@ -315,7 +315,10 @@ ${imgInstruction}
     setScanning(item.id);
     setTimeout(() => {
       setScanning(null);
-      window.open(item.sourceUrl, '_blank');
+      // window.openはPWAでアプリごと置き換わり戻ると白画面になるため、リンクと同じ外部オープン方式にする
+      const a = document.createElement('a');
+      a.href = item.sourceUrl; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      document.body.appendChild(a); a.click(); a.remove();
     }, 750);
   }
 
@@ -437,12 +440,12 @@ ${imgInstruction}
             return (
               <div key={it.id} style={S.card}>
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
-                <div style={{...S.hero, background:c.grad, ...(it._img&&it.sourceUrl?{cursor:"pointer"}:{})}}
-                  onClick={e => { if(it._img && it.sourceUrl){ handleImageSearch(e,it); } }}>
+                <div style={{...S.hero, background:c.grad, ...(heroImg&&it.sourceUrl?{cursor:"pointer"}:{})}}
+                  onClick={e => { if(heroImg && it.sourceUrl){ handleImageSearch(e,it); } }}>
                   {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
                   <span style={S.heroGlow}/>
                   <span style={S.cardCat}>{c.en}</span>
-                  {it._img && it.sourceUrl && scanning !== it.id && (
+                  {heroImg && it.sourceUrl && scanning !== it.id && (
                     <span style={S.lensHint}>🔍</span>
                   )}
                   {scanning === it.id && (
@@ -467,10 +470,10 @@ ${imgInstruction}
                       📍 地図で行く
                     </a>
                   )}
-                  {it.sourceUrl && (
+                  {it.sourceUrl && !heroImg && (
                     <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer"
                        style={S.cardLink} onClick={e=>e.stopPropagation()}>
-                      {it.searchLabel ? `🔍 ${it.searchLabel}` : "🔗 開く"}
+                      🔗 開く
                     </a>
                   )}
                   {(it._img || it.image) && (
