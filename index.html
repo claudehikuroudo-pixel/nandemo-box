@@ -331,18 +331,12 @@ ${imgInstruction}
     setItems(prev => prev.filter(it => it.id !== id));
     setMenuId(null);
   }
-  function togglePin(id) {
-    setItems(prev => prev.map(it => it.id === id ? { ...it, pinned: !it.pinned } : it));
-    setMenuId(null);
-  }
 
   const catOrder = Object.keys(CATS);
   const visible = (() => {
     const arr = items.filter(it => filter === "all" || it.category === filter);
     if (sort === "old") arr.reverse();
     else if (sort === "cat") arr.sort((a,b) => catOrder.indexOf(a.category) - catOrder.indexOf(b.category));
-    // ピン留めを最上部へ（安定ソートで並び順を維持）
-    arr.sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
     return arr;
   })();
 
@@ -480,7 +474,7 @@ ${imgInstruction}
                   )}
                 </div>
                 <div style={S.cardBody}>
-                  <div style={S.cardTitle}>{it.pinned ? "⭐ " : ""}{it.title}</div>
+                  <div style={S.cardTitle}>{it.title}</div>
                   {it.meta && <div style={S.cardMeta}>{it.meta}</div>}
                   {it.chip && <span style={{...S.cardChip, background:c.chip, color:c.chipC}}>{it.chip}</span>}
                   {it.category === "basho" && (
@@ -506,7 +500,6 @@ ${imgInstruction}
                 {menuId===it.id && (
                   <div style={S.menu} onClick={e=>e.stopPropagation()}>
                     <div style={S.menuClose} onClick={()=>setMenuId(null)}>✕</div>
-                    <div style={S.menuPin} onClick={()=>togglePin(it.id)}>{it.pinned ? "⭐ ピンを外す" : "☆ 上にピン留め"}</div>
                     <div style={S.menuHint}>分類を変える</div>
                     {Object.entries(CATS).map(([k,v])=>(
                       <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
@@ -721,7 +714,6 @@ const S = {
   menu: { position:"absolute", inset:0, zIndex:10, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:"10px 10px 10px", display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
   menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
   menuItem: { display:"flex", alignItems:"center", gap:8, padding:"9px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
-  menuPin: { padding:"8px 10px", borderRadius:10, fontSize:12, fontWeight:800, color:"#d18908", textAlign:"center", cursor:"pointer", background:"rgba(255,182,39,0.14)", marginBottom:5 },
   menuDel: { marginTop:8, padding:"13px 10px", borderRadius:12, fontSize:14, fontWeight:800, color:"#fff", textAlign:"center", cursor:"pointer", background:"linear-gradient(120deg,#ff5e8a,#ff8f6b)", boxShadow:"0 4px 12px rgba(255,94,138,0.35)" },
   dock: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", padding:"16px 24px 30px", background:"linear-gradient(to top,rgba(246,246,248,0.96) 55%,transparent)" },
   drop: { height:56, borderRadius:19, background:"linear-gradient(120deg,#16161e,#34344a)", display:"flex", alignItems:"center", justifyContent:"center", gap:9, cursor:"pointer", boxShadow:"0 12px 32px rgba(30,30,50,0.35)" },
