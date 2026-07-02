@@ -137,6 +137,7 @@ function saveItems(items) {
 function App() {
   const [items, setItems] = useState(loadItems);
   const [filter, setFilter] = useState("all");
+  const [sort, setSort] = useState("new");
   const [sheet, setSheet] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -330,8 +331,20 @@ ${imgInstruction}
     setItems(prev => prev.filter(it => it.id !== id));
     setMenuId(null);
   }
+  function togglePin(id) {
+    setItems(prev => prev.map(it => it.id === id ? { ...it, pinned: !it.pinned } : it));
+    setMenuId(null);
+  }
 
-  const visible = items.filter(it => filter === "all" || it.category === filter);
+  const catOrder = Object.keys(CATS);
+  const visible = (() => {
+    const arr = items.filter(it => filter === "all" || it.category === filter);
+    if (sort === "old") arr.reverse();
+    else if (sort === "cat") arr.sort((a,b) => catOrder.indexOf(a.category) - catOrder.indexOf(b.category));
+    // ピン留めを最上部へ（安定ソートで並び順を維持）
+    arr.sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
+    return arr;
+  })();
 
   return (
     <div style={S.bg}>
@@ -422,7 +435,14 @@ ${imgInstruction}
           </div>
         </div>
 
-        <div style={S.boxHead}>気になる箱</div>
+        <div style={S.boxHeadRow}>
+          <span style={S.boxHead}>気になる箱</span>
+          <div style={S.sortWrap}>
+            {[["new","新しい順"],["old","古い順"],["cat","種類別"]].map(([k,l])=>(
+              <span key={k} onClick={()=>setSort(k)} style={{...S.sortBtn, ...(sort===k?S.sortBtnOn:{})}}>{l}</span>
+            ))}
+          </div>
+        </div>
         <div style={S.tabs}>
           {[["all","すべて","#16161e"],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["news","ニュース",CATS.news.dot],["kyomi","興味ある",CATS.kyomi.dot],["event","予定",CATS.event.dot]].map(([c,l,col])=>(
             <div key={c} onClick={()=>setFilter(c)}
@@ -460,7 +480,7 @@ ${imgInstruction}
                   )}
                 </div>
                 <div style={S.cardBody}>
-                  <div style={S.cardTitle}>{it.title}</div>
+                  <div style={S.cardTitle}>{it.pinned ? "⭐ " : ""}{it.title}</div>
                   {it.meta && <div style={S.cardMeta}>{it.meta}</div>}
                   {it.chip && <span style={{...S.cardChip, background:c.chip, color:c.chipC}}>{it.chip}</span>}
                   {it.category === "basho" && (
@@ -486,6 +506,7 @@ ${imgInstruction}
                 {menuId===it.id && (
                   <div style={S.menu} onClick={e=>e.stopPropagation()}>
                     <div style={S.menuClose} onClick={()=>setMenuId(null)}>✕</div>
+                    <div style={S.menuPin} onClick={()=>togglePin(it.id)}>{it.pinned ? "⭐ ピンを外す" : "☆ 上にピン留め"}</div>
                     <div style={S.menuHint}>分類を変える</div>
                     {Object.entries(CATS).map(([k,v])=>(
                       <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
@@ -676,7 +697,11 @@ const S = {
   calEvTime: { fontSize:11, fontWeight:700, color:"#6a6a7a", width:42 },
   calEvBar: { width:3, height:26, borderRadius:2 },
   calEvTitle: { fontSize:12.5, fontWeight:600, color:"#1a1a24" }, calEvMeta:{ fontSize:10, color:"#a0a0b0", marginTop:1 },
-  boxHead: { padding:"12px 24px 10px", fontSize:12, fontWeight:800, letterSpacing:"0.08em", color:"#16161e" },
+  boxHeadRow: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 20px 10px" },
+  boxHead: { fontSize:12, fontWeight:800, letterSpacing:"0.08em", color:"#16161e" },
+  sortWrap: { display:"flex", gap:2, background:"rgba(120,120,150,0.09)", borderRadius:100, padding:3 },
+  sortBtn: { fontSize:10.5, fontWeight:700, color:"#8a8a9a", padding:"4px 10px", borderRadius:100, cursor:"pointer", whiteSpace:"nowrap" },
+  sortBtnOn: { background:"#fff", color:"#16161e", boxShadow:"0 1px 4px rgba(0,0,0,0.1)" },
   tabs: { display:"flex", gap:6, padding:"0 20px 12px", overflowX:"auto" },
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
@@ -696,6 +721,7 @@ const S = {
   menu: { position:"absolute", inset:0, zIndex:10, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:"10px 10px 10px", display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
   menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
   menuItem: { display:"flex", alignItems:"center", gap:8, padding:"9px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
+  menuPin: { padding:"8px 10px", borderRadius:10, fontSize:12, fontWeight:800, color:"#d18908", textAlign:"center", cursor:"pointer", background:"rgba(255,182,39,0.14)", marginBottom:5 },
   menuDel: { marginTop:8, padding:"13px 10px", borderRadius:12, fontSize:14, fontWeight:800, color:"#fff", textAlign:"center", cursor:"pointer", background:"linear-gradient(120deg,#ff5e8a,#ff8f6b)", boxShadow:"0 4px 12px rgba(255,94,138,0.35)" },
   dock: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", padding:"16px 24px 30px", background:"linear-gradient(to top,rgba(246,246,248,0.96) 55%,transparent)" },
   drop: { height:56, borderRadius:19, background:"linear-gradient(120deg,#16161e,#34344a)", display:"flex", alignItems:"center", justifyContent:"center", gap:9, cursor:"pointer", boxShadow:"0 12px 32px rgba(30,30,50,0.35)" },
