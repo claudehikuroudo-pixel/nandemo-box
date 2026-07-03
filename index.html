@@ -25,19 +25,24 @@
     100% { top: 105%; opacity: 0; }
   }
   @keyframes nbSparkle {
-    0%   { transform: scale(0) rotate(0deg);   opacity: 0; }
-    35%  { transform: scale(1.3) rotate(60deg); opacity: 1; }
-    70%  { transform: scale(0.9) rotate(110deg);opacity: 0.7; }
-    100% { transform: scale(0) rotate(160deg);  opacity: 0; }
+    0%   { transform: scale(0) rotate(0deg);    opacity: 0; }
+    30%  { transform: scale(1.7) rotate(50deg);  opacity: 1; }
+    70%  { transform: scale(1.1) rotate(120deg); opacity: 0.85; }
+    100% { transform: scale(0) rotate(190deg);   opacity: 0; }
   }
   @keyframes nbRipple {
-    0%   { transform: scale(0.3); opacity: 0.9; }
-    100% { transform: scale(2.8); opacity: 0;   }
+    0%   { transform: scale(0.2); opacity: 1; }
+    100% { transform: scale(3.6); opacity: 0; }
   }
   @keyframes nbFlash {
     0%   { opacity: 0; }
-    40%  { opacity: 0.55; }
+    30%  { opacity: 0.75; }
     100% { opacity: 0; }
+  }
+  @keyframes nbGrid {
+    0%   { opacity: 0; transform: scale(1.15); }
+    25%  { opacity: 0.5; }
+    100% { opacity: 0; transform: scale(1); }
   }
   @keyframes nbPulse {
     0%,100% { box-shadow: 0 0 0 0 rgba(80,200,255,0.6); }
@@ -312,15 +317,11 @@ ${imgInstruction}
   }
   function handleImageSearch(e, item) {
     e.stopPropagation();
-    if (!item.sourceUrl) return;
+    // スキャンは"演出のみ"。自動で外部を開かない（＝直前ページの一瞬の露出＝プライバシー漏れを防ぐ）。
+    // 開きたい時はカードの「🔍調べる/🔗開く」ボタンから明示的に。
+    if (scanning === item.id) return;
     setScanning(item.id);
-    setTimeout(() => {
-      setScanning(null);
-      // window.openはPWAでアプリごと置き換わり戻ると白画面になるため、リンクと同じ外部オープン方式にする
-      const a = document.createElement('a');
-      a.href = item.sourceUrl; a.target = '_blank'; a.rel = 'noopener noreferrer';
-      document.body.appendChild(a); a.click(); a.remove();
-    }, 750);
+    setTimeout(() => setScanning(null), 1400);
   }
 
   function changeCat(id, cat) {
@@ -454,18 +455,20 @@ ${imgInstruction}
             return (
               <div key={it.id} style={S.card}>
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
-                <div style={{...S.hero, background:c.grad, ...(heroImg&&it.sourceUrl?{cursor:"pointer"}:{})}}
-                  onClick={e => { if(heroImg && it.sourceUrl){ handleImageSearch(e,it); } }}>
+                <div style={{...S.hero, background:c.grad, ...(heroImg?{cursor:"pointer"}:{})}}
+                  onClick={e => { if(heroImg){ handleImageSearch(e,it); } }}>
                   {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
                   <span style={S.heroGlow}/>
                   <span style={S.cardCat}>{c.en}</span>
-                  {heroImg && it.sourceUrl && scanning !== it.id && (
-                    <span style={S.lensHint}>🔍</span>
+                  {heroImg && scanning !== it.id && (
+                    <span style={S.lensHint}>✨</span>
                   )}
                   {scanning === it.id && (
                     <div style={S.scanOverlay}>
+                      <div style={S.scanGrid}/>
                       <div style={S.scanLine}/>
-                      {[{left:"22%",top:"38%",delay:0},{left:"62%",top:"52%",delay:90},{left:"44%",top:"18%",delay:160},{left:"75%",top:"28%",delay:50}].map((p,i)=>(
+                      <div style={{...S.scanLine, animationDelay:"0.28s", opacity:0.65}}/>
+                      {[{left:"22%",top:"38%",delay:0},{left:"62%",top:"52%",delay:90},{left:"44%",top:"18%",delay:160},{left:"75%",top:"28%",delay:50},{left:"33%",top:"66%",delay:220},{left:"82%",top:"60%",delay:130},{left:"15%",top:"72%",delay:300}].map((p,i)=>(
                         <div key={i} style={{...S.sparkle,left:p.left,top:p.top,animationDelay:`${p.delay}ms`}}>✦</div>
                       ))}
                       <div style={S.scanRipple}/>
@@ -484,10 +487,10 @@ ${imgInstruction}
                       📍 地図で行く
                     </a>
                   )}
-                  {it.sourceUrl && !heroImg && (
+                  {it.sourceUrl && (
                     <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer"
                        style={S.cardLink} onClick={e=>e.stopPropagation()}>
-                      🔗 開く
+                      {it.searchLabel ? `🔍 ${it.searchLabel}` : "🔗 開く"}
                     </a>
                   )}
                   {(it._img || it.image) && (
@@ -750,10 +753,11 @@ const S = {
   lbClose: { position:"absolute", top:28, right:24, width:36, height:36, borderRadius:18, background:"rgba(255,255,255,0.18)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, cursor:"pointer", fontWeight:700 },
   lensHint: { position:"absolute", bottom:10, right:12, fontSize:14, opacity:0.85, filter:"drop-shadow(0 1px 3px rgba(0,0,0,0.4))" },
   scanOverlay: { position:"absolute", inset:0, borderRadius:"inherit", overflow:"hidden", zIndex:10 },
-  scanLine: { position:"absolute", left:0, right:0, height:3, background:"linear-gradient(90deg,transparent,rgba(80,220,255,0.9),rgba(255,255,255,1),rgba(80,220,255,0.9),transparent)", boxShadow:"0 0 12px 4px rgba(80,220,255,0.7)", animation:"nbScan 0.65s ease-in forwards", top:0 },
-  sparkle: { position:"absolute", fontSize:11, color:"#fff", textShadow:"0 0 6px rgba(100,220,255,0.9)", animation:"nbSparkle 0.6s ease-out forwards", pointerEvents:"none" },
-  scanRipple: { position:"absolute", top:"50%", left:"50%", width:32, height:32, marginTop:-16, marginLeft:-16, borderRadius:"50%", border:"2.5px solid rgba(80,220,255,0.9)", animation:"nbRipple 0.65s ease-out forwards" },
-  scanFlash: { position:"absolute", inset:0, background:"rgba(200,240,255,0.35)", animation:"nbFlash 0.65s ease-out forwards" },
+  scanGrid: { position:"absolute", inset:0, backgroundImage:"linear-gradient(rgba(120,220,255,0.5) 1px,transparent 1px),linear-gradient(90deg,rgba(120,220,255,0.5) 1px,transparent 1px)", backgroundSize:"14px 14px", animation:"nbGrid 1.1s ease-out forwards", pointerEvents:"none" },
+  scanLine: { position:"absolute", left:0, right:0, height:5, background:"linear-gradient(90deg,transparent,rgba(120,110,255,0.6),rgba(80,220,255,1),#ffffff,rgba(80,220,255,1),rgba(120,110,255,0.6),transparent)", boxShadow:"0 0 22px 8px rgba(90,200,255,0.85), 0 0 44px 16px rgba(130,110,255,0.5)", animation:"nbScan 1.1s cubic-bezier(0.45,0,0.5,1) forwards", top:0 },
+  sparkle: { position:"absolute", fontSize:18, color:"#fff", textShadow:"0 0 10px rgba(120,220,255,1), 0 0 20px rgba(150,120,255,0.9)", animation:"nbSparkle 0.9s ease-out forwards", pointerEvents:"none" },
+  scanRipple: { position:"absolute", top:"50%", left:"50%", width:40, height:40, marginTop:-20, marginLeft:-20, borderRadius:"50%", border:"3px solid rgba(130,225,255,0.95)", boxShadow:"0 0 18px rgba(120,200,255,0.8)", animation:"nbRipple 1.1s ease-out forwards" },
+  scanFlash: { position:"absolute", inset:0, background:"radial-gradient(circle, rgba(215,238,255,0.6), rgba(150,175,255,0.25))", animation:"nbFlash 1.1s ease-out forwards" },
   fieldLabel: { fontSize:11, fontWeight:700, color:"#888", margin:"10px 0 6px" },
   select: { width:"100%", height:46, borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:13, color:"#1a1a24", outline:"none" },
   dateInput: { width:"100%", height:46, borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:13, color:"#1a1a24", outline:"none", marginBottom:10 },
