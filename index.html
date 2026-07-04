@@ -317,11 +317,14 @@ ${imgInstruction}
   }
   function handleImageSearch(e, item) {
     e.stopPropagation();
-    // スキャンは"演出のみ"。自動で外部を開かない（＝直前ページの一瞬の露出＝プライバシー漏れを防ぐ）。
-    // 開きたい時はカードの「🔍調べる/🔗開く」ボタンから明示的に。
-    if (scanning === item.id) return;
+    if (!item.sourceUrl || scanning === item.id) return;
     setScanning(item.id);
-    setTimeout(() => setScanning(null), 1400);
+    setTimeout(() => {
+      setScanning(null);
+      const a = document.createElement('a');
+      a.href = item.sourceUrl; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      document.body.appendChild(a); a.click(); a.remove();
+    }, 1150);
   }
 
   function changeCat(id, cat) {
@@ -455,13 +458,13 @@ ${imgInstruction}
             return (
               <div key={it.id} style={S.card}>
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
-                <div style={{...S.hero, background:c.grad, ...(heroImg?{cursor:"pointer"}:{})}}
-                  onClick={e => { if(heroImg){ handleImageSearch(e,it); } }}>
+                <div style={{...S.hero, background:c.grad, ...(heroImg&&it.sourceUrl?{cursor:"pointer"}:{})}}
+                  onClick={e => { if(heroImg && it.sourceUrl){ handleImageSearch(e,it); } }}>
                   {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
                   <span style={S.heroGlow}/>
                   <span style={S.cardCat}>{c.en}</span>
-                  {heroImg && scanning !== it.id && (
-                    <span style={S.lensHint}>✨</span>
+                  {heroImg && it.sourceUrl && scanning !== it.id && (
+                    <span style={S.lensHint}>🔍</span>
                   )}
                   {scanning === it.id && (
                     <div style={S.scanOverlay}>
@@ -487,7 +490,7 @@ ${imgInstruction}
                       📍 地図で行く
                     </a>
                   )}
-                  {it.sourceUrl && (
+                  {it.sourceUrl && !heroImg && (
                     <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer"
                        style={S.cardLink} onClick={e=>e.stopPropagation()}>
                       {it.searchLabel ? `🔍 ${it.searchLabel}` : "🔗 開く"}
