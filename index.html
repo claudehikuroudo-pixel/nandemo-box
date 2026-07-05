@@ -360,10 +360,13 @@ ${imgInstruction}
     e.stopPropagation();
     if (!item.sourceUrl || scanning === item.id) return;
     setScanning(item.id);
-    // iOSはタップから間が空くと新タブ表示をブロックするため、短い遅延(0.7s)で開く（前に動いてた"最初のやり方"）
+    // iOSはタップから間が空くと新タブ表示をブロックするため短い遅延(0.7s)で開く。
+    // window.openは空の内蔵ブラウザが居座るため、リンク(anchor)方式で外部Safariに開く＝戻りがキレイ。
     setTimeout(() => {
       setScanning(null);
-      window.open(item.sourceUrl, '_blank');
+      const a = document.createElement('a');
+      a.href = item.sourceUrl; a.target = '_blank'; a.rel = 'noopener noreferrer';
+      document.body.appendChild(a); a.click(); a.remove();
     }, 700);
   }
 
