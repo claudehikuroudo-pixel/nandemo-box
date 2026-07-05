@@ -139,8 +139,35 @@ function saveItems(items) {
   }
 }
 
+// ── IndexedDB（"消えない箱"の主保存。localStorage(~5MB)は画像で溢れる＝サムネ消失の原因。IDBは数百MB＆消えにくい）──
+const IDB_NAME = "nandemo-box", IDB_STORE = "kv", IDB_ITEMS_KEY = "items";
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    let req;
+    try { req = indexedDB.open(IDB_NAME, 1); } catch (e) { reject(e); return; }
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function idbGetItems() {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(IDB_ITEMS_KEY);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }));
+}
+function idbSetItems(items) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(items, IDB_ITEMS_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+
 function App() {
-  const [items, setItems] = useState(loadItems);
+  const [items, setItems] = useState(null); // null = IndexedDB読込中
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("new");
   const [sheet, setSheet] = useState(false);
@@ -154,6 +181,7 @@ function App() {
   const [resultDate, setResultDate] = useState(()=>toDateStr(new Date()));
   const [scanning, setScanning] = useState(null);
   const fileRef = useRef(null);
+  const loadedRef = useRef(false);
   const calScrollRef = useRef(null);
   const nextId = useRef(Date.now());
   const today = (() => { const d = new Date(); d.setHours(0,0,0,0); return d; })();
@@ -167,8 +195,21 @@ function App() {
   const [keyDraft, setKeyDraft] = useState("");
   const [calPageIdx, setCalPageIdx] = useState(1);
 
-  // items が変わるたび保存
-  useEffect(() => { saveItems(items); }, [items]);
+  // 初回：IndexedDBから読込。無ければ旧localStorageから自動移行。それも無ければSEED。
+  useEffect(() => {
+    (async () => {
+      let data = null;
+      try { data = await idbGetItems(); } catch (e) { /* IDB不可の環境 */ }
+      if (!Array.isArray(data)) data = loadItems(); // 旧localStorageのデータ or SEED
+      setItems(data);
+      loadedRef.current = true;
+    })();
+  }, []);
+  // items変更をIndexedDBへ永続化（数百MB＝画像を貯めても消えない）。失敗時のみlocalStorageへ退避。
+  useEffect(() => {
+    if (!loadedRef.current || items == null) return;
+    idbSetItems(items).catch(() => saveItems(items));
+  }, [items]);
   // カレンダーを現在の2週間ブロック（ページ1）にスクロール
   useEffect(() => {
     if (calScrollRef.current) {
@@ -337,7 +378,7 @@ ${imgInstruction}
 
   const catOrder = Object.keys(CATS);
   const visible = (() => {
-    const arr = items.filter(it => filter === "all" || it.category === filter);
+    const arr = (items || []).filter(it => filter === "all" || it.category === filter);
     if (sort === "old") arr.reverse();
     else if (sort === "cat") arr.sort((a,b) => catOrder.indexOf(a.category) - catOrder.indexOf(b.category));
     return arr;
@@ -396,7 +437,7 @@ ${imgInstruction}
                           <div key={di} style={{...S.dayMini,...(isToday?S.dayToday:{})}}>
                             <span style={{...S.dayNumMini,...(isSun?{color:"#ff8a9a"}:isSat?{color:"#8aa8ff"}:{}),...(isToday?{color:"#fff"}:{})}}>{d}</span>
                             <span style={S.dayDots}>
-                              {items.filter(it=>it.date===toDateStr(dt)).slice(0,3).map((it,idx)=>(
+                              {(items||[]).filter(it=>it.date===toDateStr(dt)).slice(0,3).map((it,idx)=>(
                                 <i key={idx} style={{...S.dot,background:isToday?"rgba(255,255,255,0.9)":CATS[it.category]?.dot||"#ccc"}}/>
                               ))}
                             </span>
@@ -412,7 +453,7 @@ ${imgInstruction}
           <div style={S.calEvents}>
             {(() => {
               const todayStr = toDateStr(today);
-              const dated = items.filter(it => it.date && it.date >= todayStr)
+              const dated = (items || []).filter(it => it.date && it.date >= todayStr)
                                  .sort((a,b) => a.date.localeCompare(b.date));
               if (dated.length === 0) {
                 return <div style={{fontSize:12.5, fontWeight:600, color:"#8a8a9a", textAlign:"center", padding:"12px 10px", background:"rgba(120,120,150,0.06)", borderRadius:12, border:"1px dashed rgba(120,120,150,0.25)"}}>📥 予定・タスクを放り込むと、ここに表示されます</div>;
