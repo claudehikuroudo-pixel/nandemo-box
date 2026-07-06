@@ -180,6 +180,10 @@ function App() {
   const [lightbox, setLightbox] = useState(null);
   const [resultDate, setResultDate] = useState(()=>toDateStr(new Date()));
   const [scanning, setScanning] = useState(null);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askInput, setAskInput] = useState("");
+  const [askBusy, setAskBusy] = useState(false);
+  const [askAnswer, setAskAnswer] = useState("");
   const fileRef = useRef(null);
   const loadedRef = useRef(false);
   const calScrollRef = useRef(null);
@@ -353,6 +357,52 @@ ${imgInstruction}
     }
   }
 
+  // 箱の中身にAIが答える（＝生活版NotebookLMの核。貯めた項目のテキストだけを根拠に回答）
+  async function askBox(question) {
+    if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); setAskOpen(false); setSettings(true); return; }
+    if (!question.trim()) return;
+    setAskBusy(true); setAskAnswer("");
+    try {
+      const list = (items || []).map(it => ({
+        title: it.title,
+        種類: CATS[it.category] ? CATS[it.category].label : it.category,
+        meta: it.meta || undefined,
+        chip: it.chip || undefined,
+        date: it.date || undefined,
+        added: it.added || undefined,
+      }));
+      const prompt = `あなたはユーザー個人の「なんでも箱」に詳しいアシスタントです。
+以下はユーザーが箱に貯めた項目一覧（JSON）です。ユーザーの質問に、この一覧だけを根拠に日本語で簡潔に答えてください。
+- 該当する項目があれば、そのタイトルを挙げて答える（複数あれば箇条書き）。
+- 見当たらなければ「箱の中には見当たりませんでした」と正直に言う。
+- 一覧に無い情報を作らない（ハレーション厳禁）。
+- 今日は${toDateStr(today)}。「今週」等の相対表現は今日基準で判断する。
+
+[箱の中身]
+${JSON.stringify(list)}
+
+質問: ${question}`;
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({ model: model, max_tokens: 700, messages: [{ role: "user", content: [{ type: "text", text: prompt }] }] }),
+      });
+      const data = await res.json();
+      if (data.error) { setAskAnswer("AIエラー: " + (data.error.message || "キーや残高を確認してください")); return; }
+      const ans = data.content.filter(c => c.type === "text").map(c => c.text).join("").trim();
+      setAskAnswer(ans || "（回答が空でした）");
+    } catch (e) {
+      setAskAnswer("聞けませんでした。通信かキーを確認して、もう一度試してください。");
+    } finally {
+      setAskBusy(false);
+    }
+  }
+
   function confirmAdd() {
     if (!result) return;
     const item = { id: nextId.current++, ...result };
@@ -482,6 +532,12 @@ ${imgInstruction}
           </div>
         </div>
 
+        {/* 箱に聞く（AIに聞ける＝生活版NotebookLMの核） */}
+        <div style={S.askBar} onClick={()=>{setAskOpen(true); setAskAnswer("");}}>
+          <span style={S.askBarIcon}>🔮</span>
+          <span style={S.askBarText}>箱に聞く（例：この前のレシピ何だっけ？）</span>
+        </div>
+
         <div style={S.boxHeadRow}>
           <span style={S.boxHead}>気になる箱</span>
           <div style={S.sortWrap}>
@@ -574,6 +630,40 @@ ${imgInstruction}
             <span style={S.dropPlus}>＋</span><span style={S.dropTxt}>放り込む</span>
           </div>
         </div>
+
+        {/* 箱に聞くシート */}
+        {askOpen && (
+          <div style={S.sheetWrap} onClick={()=>!askBusy && setAskOpen(false)}>
+            <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+              <div style={S.sheetGrip}/>
+              <div style={S.sheetTitle}>🔮 箱に聞く</div>
+              <div style={S.sheetSub}>貯めた中身に、AIが答えます。「あれ何だっけ」を会話で。</div>
+              <textarea
+                style={S.textarea}
+                placeholder="例：この前のレシピ何だっけ？／今週やることある？／行きたいって言ってたバーどこ？"
+                value={askInput}
+                onChange={e=>setAskInput(e.target.value)}
+                disabled={askBusy}
+              />
+              {askAnswer && (
+                <div style={S.askAnswer}>{askAnswer}</div>
+              )}
+              <div style={S.sheetBtns}>
+                <button style={S.btnGhost} onClick={()=>setAskOpen(false)} disabled={askBusy}>閉じる</button>
+                <button style={{...S.btnMain, ...(askBusy||!askInput.trim()?{opacity:0.5}:{})}}
+                  onClick={()=>askBox(askInput)} disabled={askBusy||!askInput.trim()}>
+                  {askBusy ? "AIが探し中…" : "聞く →"}
+                </button>
+              </div>
+              <div style={S.samples}>
+                <div style={S.samplesLabel}>こんなことが聞けます：</div>
+                {["今週やること教えて","気になってた商品なに？","行きたい場所どこだっけ？","あとで読む記事ある？"].map((s,i)=>(
+                  <div key={i} style={S.sampleChip} onClick={()=>setAskInput(s)}>{s}</div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 放り込みシート */}
         {sheet && (
@@ -745,6 +835,10 @@ const S = {
   calEvTime: { fontSize:11, fontWeight:700, color:"#6a6a7a", width:42 },
   calEvBar: { width:3, height:26, borderRadius:2 },
   calEvTitle: { fontSize:12.5, fontWeight:600, color:"#1a1a24" }, calEvMeta:{ fontSize:10, color:"#a0a0b0", marginTop:1 },
+  askBar: { display:"flex", alignItems:"center", gap:8, margin:"8px 18px 0", padding:"12px 14px", borderRadius:15, background:"linear-gradient(120deg,rgba(160,107,255,0.12),rgba(86,196,255,0.12))", border:"1px solid rgba(160,120,255,0.32)", cursor:"pointer" },
+  askBarIcon: { fontSize:16, lineHeight:1 },
+  askBarText: { fontSize:12.5, fontWeight:700, color:"#8b54f5" },
+  askAnswer: { marginTop:12, padding:"14px 16px", borderRadius:16, background:"#f4f1ff", border:"1px solid rgba(160,120,255,0.25)", fontSize:13.5, lineHeight:1.75, color:"#2a2440", whiteSpace:"pre-wrap" },
   boxHeadRow: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 20px 10px" },
   boxHead: { fontSize:12, fontWeight:800, letterSpacing:"0.08em", color:"#16161e" },
   sortWrap: { display:"flex", gap:2, background:"rgba(120,120,150,0.09)", borderRadius:100, padding:3 },
