@@ -184,6 +184,9 @@ function App() {
   const [askInput, setAskInput] = useState("");
   const [askBusy, setAskBusy] = useState(false);
   const [askAnswer, setAskAnswer] = useState("");
+  const [askHits, setAskHits] = useState([]); // 答えに該当したカードid（行動ボタン付きで表示）
+  const [planId, setPlanId] = useState(null); // 「予定に入れる」中のカードid
+  const [planDate, setPlanDate] = useState(()=>toDateStr(new Date()));
   const fileRef = useRef(null);
   const loadedRef = useRef(false);
   const calScrollRef = useRef(null);
@@ -358,12 +361,14 @@ ${imgInstruction}
   }
 
   // 箱の中身にAIが答える（＝生活版NotebookLMの核。貯めた項目のテキストだけを根拠に回答）
+  // 答えと一緒に該当カードのidも返させ、カード＋行動ボタン（開く/地図/予定化）を表示する＝「想起→行動」
   async function askBox(question) {
     if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); setAskOpen(false); setSettings(true); return; }
     if (!question.trim()) return;
-    setAskBusy(true); setAskAnswer("");
+    setAskBusy(true); setAskAnswer(""); setAskHits([]); setPlanId(null);
     try {
       const list = (items || []).map(it => ({
+        id: it.id,
         title: it.title,
         種類: CATS[it.category] ? CATS[it.category].label : it.category,
         meta: it.meta || undefined,
@@ -374,14 +379,18 @@ ${imgInstruction}
       const prompt = `あなたはユーザー個人の「なんでも箱」に詳しいアシスタントです。
 以下はユーザーが箱に貯めた項目一覧（JSON）です。ユーザーの質問に、この一覧だけを根拠に日本語で簡潔に答えてください。
 - 該当する項目があれば、そのタイトルを挙げて答える（複数あれば箇条書き）。
-- 見当たらなければ「箱の中には見当たりませんでした」と正直に言う。
-- 一覧に無い情報を作らない（ハレーション厳禁）。
+- 見当たらなければanswerで「箱の中には見当たりませんでした」と正直に言い、idsは空配列。
+- 一覧に無い情報を作らない（ハレーション厳禁）。idsは必ず一覧に存在するidだけ。
 - 今日は${toDateStr(today)}。「今週」等の相対表現は今日基準で判断する。
+- 提案系の質問（今晩なに作る?等）は、該当カテゴリから1〜3個おすすめして理由を一言。
 
 [箱の中身]
 ${JSON.stringify(list)}
 
-質問: ${question}`;
+質問: ${question}
+
+以下のJSON形式だけを返してください。前置き・コードブロック不要:
+{"answer":"日本語の答え（簡潔・改行可）","ids":[該当する項目のid配列（関連が強い順・最大5個・無ければ空）]}`;
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -390,17 +399,30 @@ ${JSON.stringify(list)}
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true",
         },
-        body: JSON.stringify({ model: model, max_tokens: 700, messages: [{ role: "user", content: [{ type: "text", text: prompt }] }] }),
+        body: JSON.stringify({ model: model, max_tokens: 900, messages: [{ role: "user", content: [{ type: "text", text: prompt }] }] }),
       });
       const data = await res.json();
       if (data.error) { setAskAnswer("AIエラー: " + (data.error.message || "キーや残高を確認してください")); return; }
-      const ans = data.content.filter(c => c.type === "text").map(c => c.text).join("").trim();
-      setAskAnswer(ans || "（回答が空でした）");
+      const raw = data.content.filter(c => c.type === "text").map(c => c.text).join("").trim();
+      try {
+        const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+        setAskAnswer(parsed.answer || "（回答が空でした）");
+        const valid = (Array.isArray(parsed.ids) ? parsed.ids : []).filter(id => (items || []).some(it => it.id === id));
+        setAskHits(valid);
+      } catch (e2) {
+        setAskAnswer(raw || "（回答が空でした）"); // JSONで返らなかった時は全文を答えとして表示
+      }
     } catch (e) {
       setAskAnswer("聞けませんでした。通信かキーを確認して、もう一度試してください。");
     } finally {
       setAskBusy(false);
     }
+  }
+  // 答えに出たカードを予定化（interest→予定のリンク＝moat③）
+  function planItem(id, dateStr) {
+    if (!dateStr) return;
+    setItems(prev => prev.map(it => it.id === id ? { ...it, date: dateStr } : it));
+    setPlanId(null);
   }
 
   function confirmAdd() {
@@ -648,6 +670,40 @@ ${JSON.stringify(list)}
               {askAnswer && (
                 <div style={S.askAnswer}>{askAnswer}</div>
               )}
+              {/* 答えに該当したカード＝そのまま行動できる（開く/地図/予定に入れる） */}
+              {askHits.length > 0 && askHits.map(id => {
+                const it = (items || []).find(x => x.id === id);
+                if (!it) return null;
+                const c = CATS[it.category] || CATS.joho;
+                const thumb = it._img || it.image;
+                return (
+                  <div key={id} style={S.hitCard}>
+                    {thumb
+                      ? <img src={thumb} alt="" style={S.hitThumb} onError={e=>{e.target.style.display='none';}} />
+                      : <div style={{...S.hitThumb, background:c.grad}} />}
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={S.hitTitle}>{it.title}</div>
+                      <div style={S.hitBtns}>
+                        {it.sourceUrl && (
+                          <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer" style={S.hitBtn}>🔗 開く</a>
+                        )}
+                        {it.category === "basho" && (
+                          <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent([it.title, it.meta].filter(Boolean).join(" "))}`}
+                             target="_blank" rel="noopener noreferrer" style={{...S.hitBtn, background:"rgba(47,216,122,0.16)", color:"#1aa85c"}}>📍 地図で行く</a>
+                        )}
+                        {it.date
+                          ? <span style={{...S.hitBtn, background:"rgba(120,120,150,0.1)", color:"#8a8a9a", cursor:"default"}}>📅 {(()=>{const p=it.date.split("-");return `${+p[1]}/${+p[2]}`;})()} 予定済み</span>
+                          : (planId === id
+                            ? <span style={S.hitPlanRow}>
+                                <input type="date" style={S.hitDateInput} value={planDate} onChange={e=>setPlanDate(e.target.value)} />
+                                <span style={{...S.hitBtn, background:"linear-gradient(120deg,#16161e,#34344a)", color:"#fff"}} onClick={()=>planItem(id, planDate)}>入れる ✓</span>
+                              </span>
+                            : <span style={{...S.hitBtn, background:"rgba(155,107,255,0.14)", color:"#8b54f5"}} onClick={()=>{setPlanId(id); setPlanDate(toDateStr(new Date()));}}>📅 予定に入れる</span>)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setAskOpen(false)} disabled={askBusy}>閉じる</button>
                 <button style={{...S.btnMain, ...(askBusy||!askInput.trim()?{opacity:0.5}:{})}}
@@ -655,11 +711,17 @@ ${JSON.stringify(list)}
                   {askBusy ? "AIが探し中…" : "聞く →"}
                 </button>
               </div>
+              {/* ワンタップ想起：状況ボタン＝タップだけでAIが答える（考えさせない） */}
               <div style={S.samples}>
-                <div style={S.samplesLabel}>こんなことが聞けます：</div>
-                {["今週やること教えて","気になってた商品なに？","行きたい場所どこだっけ？","あとで読む記事ある？"].map((s,i)=>(
-                  <div key={i} style={S.sampleChip} onClick={()=>setAskInput(s)}>{s}</div>
-                ))}
+                <div style={S.samplesLabel}>ワンタップで聞く：</div>
+                <div style={S.presetWrap}>
+                  {["🍳 今晩なに作る？","🚗 週末どこ行く？","✅ 今週やることは？","🛍 気になってた商品は？","📰 あとで読むものある？"].map((s,i)=>(
+                    <div key={i} style={S.presetChip}
+                      onClick={()=>{ if(askBusy) return; const q=s.replace(/^[^ ]+ /,""); setAskInput(q); askBox(q); }}>
+                      {s}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -839,6 +901,15 @@ const S = {
   askBarIcon: { fontSize:16, lineHeight:1 },
   askBarText: { fontSize:12.5, fontWeight:700, color:"#8b54f5" },
   askAnswer: { marginTop:12, padding:"14px 16px", borderRadius:16, background:"#f4f1ff", border:"1px solid rgba(160,120,255,0.25)", fontSize:13.5, lineHeight:1.75, color:"#2a2440", whiteSpace:"pre-wrap" },
+  hitCard: { display:"flex", alignItems:"center", gap:12, marginTop:10, padding:10, borderRadius:16, background:"#fff", border:"1px solid #ececf2", boxShadow:"0 2px 10px rgba(100,100,150,0.07)" },
+  hitThumb: { width:52, height:52, borderRadius:12, objectFit:"cover", flexShrink:0 },
+  hitTitle: { fontSize:12.5, fontWeight:700, color:"#1a1a24", lineHeight:1.4, marginBottom:6, overflow:"hidden", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical" },
+  hitBtns: { display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" },
+  hitBtn: { display:"inline-flex", alignItems:"center", gap:3, padding:"6px 10px", borderRadius:9, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:11, fontWeight:800, textDecoration:"none", cursor:"pointer", whiteSpace:"nowrap" },
+  hitPlanRow: { display:"inline-flex", alignItems:"center", gap:6 },
+  hitDateInput: { height:32, borderRadius:9, border:"1px solid #e8e8ee", background:"#fff", padding:"0 8px", fontSize:12, color:"#1a1a24", outline:"none" },
+  presetWrap: { display:"flex", gap:6, flexWrap:"wrap" },
+  presetChip: { padding:"9px 13px", borderRadius:100, background:"linear-gradient(120deg,rgba(160,107,255,0.1),rgba(86,196,255,0.1))", border:"1px solid rgba(160,120,255,0.3)", fontSize:12, fontWeight:700, color:"#8b54f5", cursor:"pointer" },
   boxHeadRow: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 20px 10px" },
   boxHead: { fontSize:12, fontWeight:800, letterSpacing:"0.08em", color:"#16161e" },
   sortWrap: { display:"flex", gap:2, background:"rgba(120,120,150,0.09)", borderRadius:100, padding:3 },
