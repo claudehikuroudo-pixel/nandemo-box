@@ -451,7 +451,7 @@ ${JSON.stringify(list)}
         <div style={S.hd}>
           <div style={S.hdName}>なんでも<span style={S.accent}>箱</span></div>
           <div style={{display:"flex", alignItems:"center", gap:12}}>
-            <div style={S.hdMonth}>6月 <span style={{ color: "#a0a0b0", fontSize: 12 }}>2026</span></div>
+            <div style={S.hdMonth}>{(()=>{const d=new Date(calBase);d.setDate(d.getDate()+calPageIdx*14);return <>{d.getMonth()+1}月 <span style={{ color: "#a0a0b0", fontSize: 12 }}>{d.getFullYear()}</span></>;})()}</div>
             <div style={S.gear} onClick={openSettings} title="設定">⚙</div>
           </div>
         </div>
