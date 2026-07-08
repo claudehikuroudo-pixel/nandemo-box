@@ -191,12 +191,15 @@ function App() {
   const [addDay, setAddDay] = useState(null); // タップした日付(YYYY-MM-DD)
   const [selDay, setSelDay] = useState(()=>toDateStr(new Date())); // カレンダーで選択中の日
   const [showAllTasks, setShowAllTasks] = useState(false); // やること一覧を全部見る
+  const [pendingPlace, setPendingPlace] = useState(""); // 撮影時に取得中/取得した場所名
   const [addTitle, setAddTitle] = useState("");
   const [addType, setAddType] = useState("event"); // event=予定 / task=タスク
   const [addTime, setAddTime] = useState("");
   const [addRemind, setAddRemind] = useState(false);
   const notifiedRef = useRef(new Set()); // 通知済みidを記録（重複通知防止）
   const fileRef = useRef(null);
+  const cameraRef = useRef(null); // 直行カメラ用input
+  const pendingGeoRef = useRef(null); // 撮影時の位置情報 {lat,lng,place} を次のconfirmAddで付与
   const loadedRef = useRef(false);
   const calScrollRef = useRef(null);
   const nextId = useRef(Date.now());
@@ -278,6 +281,41 @@ function App() {
       setImage(compressed);
     };
     reader.readAsDataURL(file);
+  }
+
+  // 緯度経度→地名（BigDataCloud・無料/キー不要/CORS/日本語）
+  async function reverseGeocode(lat, lng) {
+    try {
+      const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=ja`);
+      const d = await r.json();
+      // 日本では locality=市区町村(港区/鶴見区)が最も分かりやすい。city は都道府県が返ることがある
+      return d.locality || d.city || d.principalSubdivision || d.countryName || "";
+    } catch (e) { return ""; }
+  }
+
+  // 📷 撮る（直行カメラ）→ 撮影時の現在地も取得 → シートを開いてAI仕分けへ
+  async function pickCamera(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    pendingGeoRef.current = null; setPendingPlace("");
+    // 位置情報を並行取得（許可制。取れなくても写真は入る）
+    if (navigator.geolocation) {
+      setPendingPlace("📍 場所を取得中…");
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const lat = pos.coords.latitude, lng = pos.coords.longitude;
+        const place = await reverseGeocode(lat, lng);
+        pendingGeoRef.current = { lat, lng, place };
+        setPendingPlace(place ? ("📍 " + place) : "📍 現在地を記録");
+      }, () => { pendingGeoRef.current = null; setPendingPlace(""); }, { enableHighAccuracy: true, timeout: 8000 });
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const compressed = await compressImage(reader.result);
+      setImage(compressed);
+      setSheet(true);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = ""; // 同じ端末で連続撮影できるようリセット
   }
 
   async function fetchUrlMeta(url) {
@@ -478,9 +516,11 @@ ${JSON.stringify(list)}
     const item = { id: nextId.current++, ...result };
     if ((result.category==="event"||result.category==="task") && resultDate) item.date = resultDate;
     item.added = toDateStr(new Date());
+    if (pendingGeoRef.current) item.geo = pendingGeoRef.current; // 撮った場所（アルバム逆引き用）
     setItems(prev => [item, ...prev]);
     setResult(null); setInput(""); setImage(null); setSheet(false);
     setResultDate(toDateStr(new Date()));
+    pendingGeoRef.current = null; setPendingPlace("");
   }
   function handleImageSearch(e, item) {
     e.stopPropagation();
@@ -588,6 +628,7 @@ ${JSON.stringify(list)}
               const wd = ["日","月","火","水","木","金","土"][new Date(selDay+"T00:00").getDay()];
               const dayItems = (items || []).filter(it => it.date===selDay && !it.done)
                                  .sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+              const dayPhotos = (items || []).filter(it => (it._img || it.image) && it.added===selDay);
               return (
                 <React.Fragment>
                   <div style={S.agendaHead}>
@@ -607,6 +648,21 @@ ${JSON.stringify(list)}
                           </div>
                         );
                       })}
+                  {dayPhotos.length>0 && (
+                    <div style={S.albumWrap}>
+                      <div style={S.albumHead}>🖼 この日のアルバム<span style={S.albumCount}>{dayPhotos.length}</span></div>
+                      <div style={S.albumStrip}>
+                        {dayPhotos.map(it => (
+                          <div key={it.id} style={S.albumThumbWrap} onClick={()=>setLightbox(it._img || it.image)}>
+                            <img src={it._img || it.image} alt="" style={S.albumThumb} />
+                            {it.geo && it.geo.place && (
+                              <span style={S.albumPlace} onClick={e=>{e.stopPropagation(); window.open(`https://www.google.com/maps?q=${it.geo.lat},${it.geo.lng}`,"_blank");}}>📍{it.geo.place}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </React.Fragment>
               );
             })()}
@@ -730,8 +786,14 @@ ${JSON.stringify(list)}
         </div>
 
         <div style={S.dock}>
-          <div style={S.drop} onClick={()=>setSheet(true)}>
-            <span style={S.dropPlus}>＋</span><span style={S.dropTxt}>放り込む</span>
+          <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={pickCamera} />
+          <div style={S.dockRow}>
+            <div style={S.shoot} onClick={()=>cameraRef.current?.click()}>
+              <span style={{fontSize:20}}>📷</span><span style={S.shootTxt}>撮る</span>
+            </div>
+            <div style={{...S.drop, flex:1}} onClick={()=>setSheet(true)}>
+              <span style={S.dropPlus}>＋</span><span style={S.dropTxt}>放り込む</span>
+            </div>
           </div>
         </div>
 
@@ -869,8 +931,9 @@ ${JSON.stringify(list)}
                       <div style={{flex:1}}>
                         <div style={{fontSize:13, fontWeight:700, color:"#1a1a24"}}>写真を放り込みました</div>
                         <div style={{fontSize:11, color:"#9a9aaa", marginTop:2}}>AIが画像を読み取ります</div>
+                        {pendingPlace && <div style={{fontSize:11, fontWeight:800, color:"#1690d8", marginTop:3}}>{pendingPlace}</div>}
                       </div>
-                      <div style={S.photoX} onClick={()=>setImage(null)}>✕</div>
+                      <div style={S.photoX} onClick={()=>{setImage(null); pendingGeoRef.current=null; setPendingPlace("");}}>✕</div>
                     </div>
                   )}
                   {error && <div style={S.error}>{error}</div>}
@@ -1026,6 +1089,16 @@ const S = {
   taskTitle: { flex:1, fontSize:13, fontWeight:600, color:"#1a1a24", minWidth:0 },
   taskDate: { fontSize:10.5, fontWeight:800, color:"#8b54f5", whiteSpace:"nowrap" },
   taskMore: { fontSize:11.5, fontWeight:800, color:"#8b54f5", textAlign:"center", padding:"8px 0 2px", cursor:"pointer", userSelect:"none" },
+  albumWrap: { marginTop:11, paddingTop:11, borderTop:"1px solid rgba(0,0,0,0.05)" },
+  albumHead: { display:"flex", alignItems:"center", gap:7, fontSize:12, fontWeight:800, color:"#2a2a38", marginBottom:8 },
+  albumCount: { fontSize:10.5, fontWeight:800, color:"#1690d8", background:"rgba(22,150,216,0.12)", borderRadius:8, padding:"1px 7px" },
+  albumStrip: { display:"flex", gap:8, overflowX:"auto", paddingBottom:2, scrollbarWidth:"none", WebkitOverflowScrolling:"touch" },
+  albumThumbWrap: { position:"relative", flexShrink:0, cursor:"pointer" },
+  albumThumb: { width:88, height:88, borderRadius:13, objectFit:"cover", display:"block", boxShadow:"0 2px 8px rgba(100,100,150,0.15)" },
+  albumPlace: { position:"absolute", left:4, bottom:4, right:4, fontSize:9.5, fontWeight:800, color:"#fff", background:"rgba(0,0,0,0.5)", borderRadius:7, padding:"2px 5px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", cursor:"pointer" },
+  dockRow: { display:"flex", gap:10, alignItems:"stretch" },
+  shoot: { width:88, borderRadius:19, background:"linear-gradient(135deg,#47bfff,#6b9aff)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:1, cursor:"pointer", boxShadow:"0 12px 32px rgba(70,140,255,0.35)" },
+  shootTxt: { fontSize:12, fontWeight:800, color:"#fff" },
   askBar: { display:"flex", alignItems:"center", gap:8, margin:"8px 18px 0", padding:"12px 14px", borderRadius:15, background:"linear-gradient(120deg,rgba(160,107,255,0.12),rgba(86,196,255,0.12))", border:"1px solid rgba(160,120,255,0.32)", cursor:"pointer" },
   askBarIcon: { fontSize:16, lineHeight:1 },
   askBarText: { fontSize:12.5, fontWeight:700, color:"#8b54f5" },
