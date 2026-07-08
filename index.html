@@ -191,6 +191,7 @@ function App() {
   const [addDay, setAddDay] = useState(null); // タップした日付(YYYY-MM-DD)
   const [selDay, setSelDay] = useState(()=>toDateStr(new Date())); // カレンダーで選択中の日
   const [showAllTasks, setShowAllTasks] = useState(false); // やること一覧を全部見る
+  const [showDone, setShowDone] = useState(false); // 完了タスクの折りたたみ
   const [pendingPlace, setPendingPlace] = useState(""); // 撮影時に取得中/取得した場所名
   const [addTitle, setAddTitle] = useState("");
   const [addType, setAddType] = useState("event"); // event=予定 / task=タスク
@@ -626,14 +627,14 @@ ${JSON.stringify(list)}
             {(() => {
               const [,sm,sd] = selDay.split("-");
               const wd = ["日","月","火","水","木","金","土"][new Date(selDay+"T00:00").getDay()];
-              const dayItems = (items || []).filter(it => it.date===selDay && !it.done)
-                                 .sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+              const dayItems = (items || []).filter(it => it.date===selDay)
+                                 .sort((a,b) => (a.done?1:0)-(b.done?1:0) || (a.time||"99:99").localeCompare(b.time||"99:99"));
               const dayPhotos = (items || []).filter(it => (it._img || it.image) && it.added===selDay);
               return (
                 <React.Fragment>
                   <div style={S.agendaHead}>
                     <span style={S.agendaDate}>{`${+sm}月${+sd}日（${wd}）`}{selDay===toDateStr(today) && <span style={S.agendaToday}>今日</span>}</span>
-                    <span style={S.addDayBtn} onClick={()=>{ setAddDay(selDay); setAddTitle(""); setAddTime(""); setAddType("event"); setAddRemind(false); }}>＋ この日に追加</span>
+                    <span style={S.addDayBtn} onClick={()=>{ setAddDay(selDay); setAddTitle(""); setAddTime(""); setAddType("event"); setAddRemind(false); }}>＋ 予定・タスク</span>
                   </div>
                   {dayItems.length===0
                     ? <div style={S.agendaEmpty}>予定なし</div>
@@ -642,9 +643,9 @@ ${JSON.stringify(list)}
                         return (
                           <div key={it.id} style={S.calEv}>
                             <div style={S.calEvTime}>{it.time || "終日"}</div>
-                            <span style={{...S.calEvBar, background:c.grad}}/>
-                            <div style={{minWidth:0, flex:1}}><div style={S.calEvTitle}>{it.remind?"🔔 ":""}{it.title}</div>{it.meta && <div style={S.calEvMeta}>{it.meta}</div>}</div>
-                            {it.category==="task" && <span style={{...S.taskCheck, marginRight:0}} onClick={()=>toggleTask(it.id)}/>}
+                            <span style={{...S.calEvBar, background:c.grad, ...(it.done?{opacity:0.35}:{})}}/>
+                            <div style={{minWidth:0, flex:1}}><div style={{...S.calEvTitle, ...(it.done?S.taskTitleDone:{})}}>{it.remind?"🔔 ":""}{it.title}</div>{it.meta && <div style={S.calEvMeta}>{it.meta}</div>}</div>
+                            {it.category==="task" && <span style={{...S.taskCheck, marginRight:0, ...(it.done?S.taskCheckOn:{})}} onClick={()=>toggleTask(it.id)}>✓</span>}
                           </div>
                         );
                       })}
@@ -669,25 +670,35 @@ ${JSON.stringify(list)}
           </div>
         </div>
 
-        {/* やること（常時表示・チェックで完了） */}
+        {/* やること（常時表示・チェックで完了→取り消し線で残す＝一般的なスケジューラー式） */}
         {(() => {
-          const tasks = (items || []).filter(it => it.category==="task" && !it.done);
-          if (tasks.length===0) return null;
-          const shown = showAllTasks ? tasks : tasks.slice(0,3);
+          const allTasks = (items || []).filter(it => it.category==="task");
+          if (allTasks.length===0) return null;
+          const undone = allTasks.filter(it => !it.done);
+          const done = allTasks.filter(it => it.done);
+          const shown = showAllTasks ? undone : undone.slice(0,3);
+          const taskRow = (it, isDone) => {
+            const p = (it.date||"").split("-");
+            return (
+              <div key={it.id} style={S.taskRow}>
+                <span style={{...S.taskCheck, ...(isDone?S.taskCheckOn:{})}} onClick={()=>toggleTask(it.id)}>✓</span>
+                <span style={{...S.taskTitle, ...(isDone?S.taskTitleDone:{})}}>{it.title}</span>
+                {it.date && <span style={{...S.taskDate, ...(isDone?{color:"#c0c0c8"}:{})}}>{it.remind&&!isDone?"🔔":""}{`${+p[1]}/${+p[2]}`}{it.time?` ${it.time}`:""}</span>}
+              </div>
+            );
+          };
           return (
             <div style={S.taskSec}>
-              <div style={S.taskSecHead}><span>✅ やること</span><span style={S.taskCount}>{tasks.length}</span></div>
-              {shown.map(it => {
-                const p = (it.date||"").split("-");
-                return (
-                  <div key={it.id} style={S.taskRow}>
-                    <span style={S.taskCheck} onClick={()=>toggleTask(it.id)}/>
-                    <span style={S.taskTitle}>{it.title}</span>
-                    {it.date && <span style={S.taskDate}>{it.remind?"🔔":""}{`${+p[1]}/${+p[2]}`}{it.time?` ${it.time}`:""}</span>}
-                  </div>
-                );
-              })}
-              {tasks.length>3 && <div style={S.taskMore} onClick={()=>setShowAllTasks(v=>!v)}>{showAllTasks?"閉じる":`すべて見る（${tasks.length}）`}</div>}
+              <div style={S.taskSecHead}><span>✅ やること</span><span style={S.taskCount}>{undone.length}</span></div>
+              {undone.length===0 && <div style={S.agendaEmpty}>やることは全部完了！</div>}
+              {shown.map(it => taskRow(it, false))}
+              {undone.length>3 && <div style={S.taskMore} onClick={()=>setShowAllTasks(v=>!v)}>{showAllTasks?"閉じる":`すべて見る（${undone.length}）`}</div>}
+              {done.length>0 && (
+                <div style={S.doneWrap}>
+                  <div style={S.doneToggle} onClick={()=>setShowDone(v=>!v)}>{showDone?"▾":"▸"} 完了（{done.length}）</div>
+                  {showDone && done.map(it => taskRow(it, true))}
+                </div>
+              )}
             </div>
           );
         })()}
@@ -1085,10 +1096,14 @@ const S = {
   taskSecHead: { display:"flex", alignItems:"center", gap:8, fontSize:12.5, fontWeight:800, color:"#2a2a38", marginBottom:6 },
   taskCount: { fontSize:11, fontWeight:800, color:"#8b54f5", background:"rgba(139,84,245,0.12)", borderRadius:8, padding:"1px 8px" },
   taskRow: { display:"flex", alignItems:"center", gap:11, padding:"7px 0" },
-  taskCheck: { width:20, height:20, borderRadius:7, border:"2px solid #c8c8d4", flexShrink:0, cursor:"pointer" },
+  taskCheck: { width:20, height:20, borderRadius:7, border:"2px solid #c8c8d4", flexShrink:0, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:900, color:"transparent", lineHeight:1 },
+  taskCheckOn: { background:"#8b54f5", border:"2px solid #8b54f5", color:"#fff" },
   taskTitle: { flex:1, fontSize:13, fontWeight:600, color:"#1a1a24", minWidth:0 },
+  taskTitleDone: { textDecoration:"line-through", color:"#b4b4be", fontWeight:500 },
   taskDate: { fontSize:10.5, fontWeight:800, color:"#8b54f5", whiteSpace:"nowrap" },
   taskMore: { fontSize:11.5, fontWeight:800, color:"#8b54f5", textAlign:"center", padding:"8px 0 2px", cursor:"pointer", userSelect:"none" },
+  doneWrap: { marginTop:4, paddingTop:6, borderTop:"1px solid rgba(0,0,0,0.05)" },
+  doneToggle: { fontSize:11.5, fontWeight:800, color:"#9a9aaa", padding:"5px 0", cursor:"pointer", userSelect:"none" },
   albumWrap: { marginTop:11, paddingTop:11, borderTop:"1px solid rgba(0,0,0,0.05)" },
   albumHead: { display:"flex", alignItems:"center", gap:7, fontSize:12, fontWeight:800, color:"#2a2a38", marginBottom:8 },
   albumCount: { fontSize:10.5, fontWeight:800, color:"#1690d8", background:"rgba(22,150,216,0.12)", borderRadius:8, padding:"1px 7px" },
