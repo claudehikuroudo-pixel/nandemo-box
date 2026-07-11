@@ -193,6 +193,7 @@ function App() {
   const [showAllTasks, setShowAllTasks] = useState(false); // やること一覧を全部見る
   const [showDone, setShowDone] = useState(false); // 完了タスクの折りたたみ
   const [pendingPlace, setPendingPlace] = useState(""); // 撮影時に取得中/取得した場所名
+  const [weekendHide, setWeekendHide] = useState(()=>{ try{return localStorage.getItem("nb_weekend_dismissed")===toDateStr(new Date());}catch(e){return false;} }); // 週末そっと提案を「また今度」で今日は非表示
   const [addTitle, setAddTitle] = useState("");
   const [addType, setAddType] = useState("event"); // event=予定 / task=タスク
   const [addTime, setAddTime] = useState("");
@@ -703,6 +704,41 @@ ${JSON.stringify(list)}
           );
         })()}
 
+        {/* 週末そっと提案（金〜日・1枚・無視できる。押し付けず"貯めたもの"を再浮上＝moat③④をやさしく） */}
+        {(() => {
+          const isWeekend = [5,6,0].includes(today.getDay());
+          if (!isWeekend || weekendHide || !items) return null;
+          const cand = (items || []).filter(it => ["recipe","basho","mono"].includes(it.category) && !it.date && !it.done);
+          if (cand.length === 0) return null;
+          // 古い方（＝忘れてそうなもの）から、レシピ1・行きたい1を優先で最大2件
+          const older = [...cand].reverse();
+          const picks = [];
+          const recipe = older.find(it => it.category==="recipe");
+          const place  = older.find(it => it.category==="basho");
+          if (recipe) picks.push(recipe);
+          if (place)  picks.push(place);
+          for (const it of older) { if (picks.length>=2) break; if (!picks.includes(it)) picks.push(it); }
+          const two = picks.slice(0,2);
+          if (two.length === 0) return null;
+          const openPlan = (it) => {
+            const map = { recipe:{type:"task",title:it.title+"を作る"}, basho:{type:"event",title:it.title}, mono:{type:"task",title:it.title+"を見に行く"} };
+            const p = map[it.category] || {type:"task", title:it.title};
+            setAddDay(toDateStr(new Date())); setAddType(p.type); setAddTitle(p.title); setAddTime(""); setAddRemind(false);
+          };
+          const invite = (it) => ({ recipe:`🍳 「${it.title}」作ってみる？`, basho:`📍 「${it.title}」行ってみる？`, mono:`🛍 「${it.title}」見に行く？` }[it.category] || `「${it.title}」どうですか？`);
+          return (
+            <div style={S.wkCard}>
+              <div style={S.wkHead}><span>🍃 週末、これどうですか？</span><span style={S.wkDismiss} onClick={()=>{ try{localStorage.setItem("nb_weekend_dismissed", toDateStr(new Date()));}catch(e){} setWeekendHide(true); }}>また今度</span></div>
+              {two.map(it => (
+                <div key={it.id} style={S.wkRow} onClick={()=>openPlan(it)}>
+                  <span style={S.wkInvite}>{invite(it)}</span>
+                  <span style={S.wkGo}>＋予定に</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+
         {/* 箱に聞く（AIに聞ける＝生活版NotebookLMの核） */}
         <div style={S.askBar} onClick={()=>{setAskOpen(true); setAskAnswer("");}}>
           <span style={S.askBarIcon}>🔮</span>
@@ -1092,6 +1128,12 @@ const S = {
   calEvTime: { fontSize:11, fontWeight:700, color:"#6a6a7a", width:42, flexShrink:0 },
   calEvBar: { width:3, height:26, borderRadius:2, flexShrink:0 },
   calEvTitle: { fontSize:12.5, fontWeight:600, color:"#1a1a24" }, calEvMeta:{ fontSize:10, color:"#a0a0b0", marginTop:1 },
+  wkCard: { margin:"10px 18px 0", padding:"12px 15px", borderRadius:20, background:"linear-gradient(135deg,rgba(63,224,138,0.12),rgba(31,200,176,0.10))", border:"1px solid rgba(47,216,122,0.28)", boxShadow:"0 8px 26px rgba(60,180,120,0.10)" },
+  wkHead: { display:"flex", alignItems:"center", justifyContent:"space-between", fontSize:12.5, fontWeight:800, color:"#1aa85c", marginBottom:6 },
+  wkDismiss: { fontSize:11, fontWeight:700, color:"#a0a0aa", cursor:"pointer", userSelect:"none" },
+  wkRow: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"8px 0", cursor:"pointer" },
+  wkInvite: { fontSize:13, fontWeight:700, color:"#1a1a24", minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  wkGo: { fontSize:11, fontWeight:800, color:"#1aa85c", background:"rgba(47,216,122,0.16)", borderRadius:9, padding:"5px 10px", whiteSpace:"nowrap", flexShrink:0 },
   taskSec: { margin:"6px 18px 0", padding:"12px 15px", borderRadius:20, background:"rgba(255,255,255,0.7)", backdropFilter:"blur(28px)", WebkitBackdropFilter:"blur(28px)", border:"1px solid rgba(255,255,255,0.9)", boxShadow:"0 8px 26px rgba(100,100,150,0.1)" },
   taskSecHead: { display:"flex", alignItems:"center", gap:8, fontSize:12.5, fontWeight:800, color:"#2a2a38", marginBottom:6 },
   taskCount: { fontSize:11, fontWeight:800, color:"#8b54f5", background:"rgba(139,84,245,0.12)", borderRadius:8, padding:"1px 8px" },
