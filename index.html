@@ -405,6 +405,7 @@ function App() {
           title: data.data.title || "",
           description: data.data.description || "",
           image: data.data.image?.url || "",
+          publisher: data.data.publisher || "",
         };
       }
     } catch (e) {}
@@ -423,7 +424,7 @@ function App() {
 
       let contextText = text || "";
       if (urlMeta) {
-        contextText += `\n\n[ページ情報]\nタイトル: ${urlMeta.title}\n説明: ${urlMeta.description}`;
+        contextText += `\n\n[ページ情報]\nURL: ${sourceUrl}\nタイトル: ${urlMeta.title}\n発信元: ${urlMeta.publisher}\n説明: ${urlMeta.description}`;
       }
 
       const imgInstruction = img
@@ -434,6 +435,12 @@ function App() {
 - スクショ・SNS・記事なら：タイトルと主要情報
 - その他：具体的な名称・特徴
 「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。`
+        : sourceUrl
+        ? `URLが放り込まれました。ページ情報（タイトル・発信元・説明）とURLのドメインから、正体を特定して分類してください：
+- **ドメインが強い手がかり**：クラシル/クックパッド/DELISH KITCHEN=recipe、食べログ/ぐるなび/Googleマップ/Retty=basho、Amazon/楽天/メルカリ/ZOZO/価格.com等のEC=mono、新聞・ニュースメディア=news、note/個人ブログ/YouTube/ハウツー記事=joho、connpass/Peatix/セミナー告知=event。
+- **titleにはページの主題**（記事名・商品名・店名など）を具体的に入れる。「記事」「動画」等の一般名詞で終わらせない。
+- 説明文が薄い時はドメインとタイトルから最も妥当なカテゴリを選ぶ（確信が持てなければconfidenceを下げる）。
+放り込まれた内容:\n"""${contextText}"""`
         : `放り込まれたテキスト:\n"""${contextText}"""`;
 
       const prompt = `あなたは「なんでも箱」アプリの仕分けエンジンです。
@@ -476,8 +483,8 @@ ${imgInstruction}
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          // 写真のときは識別精度が段違いのSonnetを自動使用（テキストは既定モデル＝安いHaikuのまま）
-          model: img ? "claude-sonnet-4-6" : model,
+          // 写真・URLは識別精度が段違いのSonnetを自動使用（薄いページ情報＋ドメイン推論に強い）。素のテキストのみ既定モデル(安いHaiku)。
+          model: (img || sourceUrl) ? "claude-sonnet-4-6" : model,
           max_tokens: 1000,
           messages: [{ role: "user", content }],
         }),
