@@ -215,8 +215,8 @@ function idbSetItems(items) {
 // loop=true：解析中ずっと繰り返す（時間可変のAPI待ち向け）／loop=false：一回で締める（カードの画像検索）
 function ScanFX({ loop }) {
   const rep      = loop ? "infinite" : "forwards";
-  const traceDur = loop ? "2.0s"     : "0.85s";
-  const beam     = loop ? "nbScan 1.6s linear infinite" : "nbScan 0.85s cubic-bezier(0.45,0,0.5,1) forwards";
+  const traceDur = loop ? "2.3s"     : "0.9s";
+  const beam     = loop ? "nbScan 1.7s linear infinite" : "nbScan 0.9s cubic-bezier(0.45,0,0.5,1) forwards";
   return (
     <div style={S.scanOverlay}>
       {/* C：輪郭トレース（薄い枠＋フチを走る光の帯） */}
@@ -1338,8 +1338,8 @@ const S = {
   scanFlash: { position:"absolute", inset:0, background:"radial-gradient(circle, rgba(215,238,255,0.6), rgba(150,175,255,0.25))", animation:"nbFlash 0.7s ease-out forwards" },
   // C＋D スキャン：輪郭トレース＋パーティクル収束＋認識フラッシュ
   scanTraceSvg: { position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none" },
-  scanTraceBase: { fill:"none", stroke:"rgba(90,210,255,0.30)", strokeWidth:2 },
-  scanTraceLit: { fill:"none", stroke:"rgba(140,238,255,1)", strokeWidth:2.6, strokeLinecap:"round", strokeDasharray:"24 376", filter:"drop-shadow(0 0 5px rgba(90,200,255,0.95)) drop-shadow(0 0 12px rgba(130,110,255,0.55))" },
+  scanTraceBase: { fill:"none", stroke:"rgba(90,210,255,0.34)", strokeWidth:2 },
+  scanTraceLit: { fill:"none", stroke:"rgba(155,242,255,1)", strokeWidth:3.2, strokeLinecap:"round", strokeDasharray:"84 316", filter:"drop-shadow(0 0 7px rgba(120,220,255,1)) drop-shadow(0 0 16px rgba(130,110,255,0.6))" },
   scanDot: { position:"absolute", top:"50%", left:"50%", width:6, height:6, marginTop:-3, marginLeft:-3, borderRadius:"50%", background:"#c8f2ff", boxShadow:"0 0 8px rgba(120,220,255,1), 0 0 14px rgba(130,110,255,0.7)", pointerEvents:"none" },
   scanReco: { position:"absolute", inset:0, background:"radial-gradient(circle, rgba(210,240,255,0.75), rgba(150,175,255,0.25) 55%, transparent 70%)", pointerEvents:"none" },
   // レーダー：円錐状のスイープ光（薄いブルーが回る）
