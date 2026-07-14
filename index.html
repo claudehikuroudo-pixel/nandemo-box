@@ -73,6 +73,20 @@
     0%,100% { opacity: 0.55; }
     50%     { opacity: 1; }
   }
+  @keyframes nbTraceMove {         /* 輪郭を走る光の帯（枠を一周） */
+    from { stroke-dashoffset: 0; }
+    to   { stroke-dashoffset: -400; }
+  }
+  @keyframes nbConverge {          /* 光の点が中心へ収束 */
+    0%   { transform: translate(var(--sx), var(--sy)) scale(1); opacity: 0; }
+    22%  { opacity: 1; }
+    100% { transform: translate(0, 0) scale(0.2); opacity: 0; }
+  }
+  @keyframes nbReco {              /* 「認識できた！」の締めフラッシュ */
+    0%, 66% { opacity: 0; }
+    80%     { opacity: 0.85; }
+    100%    { opacity: 0; }
+  }
   @keyframes nbPulse {
     0%,100% { box-shadow: 0 0 0 0 rgba(80,200,255,0.6); }
     50%      { box-shadow: 0 0 0 8px rgba(80,200,255,0); }
@@ -195,32 +209,35 @@ function idbSetItems(items) {
   }));
 }
 
-// ── スキャン演出（AI解析のシグネチャー体験） ──
-// loop=true：解析中ずっと掃引を繰り返す（時間可変のAPI待ち向け）
-// loop=false：一発スイープして「見つけた！」で締める（カードの画像検索向け）
+// ── スキャン演出（AI解析のシグネチャー体験・C＋D型） ──
+// C＝輪郭トレース：被写体のフチを光がなぞる＝「AIが中身を認識してる」を絵にする（このアプリの核）
+// D＝パーティクル収束→認識フラッシュ：光の点が中心に集まり「認識できた！」で締める
+// loop=true：解析中ずっと繰り返す（時間可変のAPI待ち向け）／loop=false：一回で締める（カードの画像検索）
 function ScanFX({ loop }) {
-  const beam  = loop ? "nbBeam 1.35s ease-in-out infinite"       : "nbScan 0.75s cubic-bezier(0.45,0,0.5,1) forwards";
-  const trail = loop ? "nbTrail 1.35s ease-in-out infinite"      : "nbScan 0.75s cubic-bezier(0.45,0,0.5,1) forwards";
-  const grid  = loop ? "nbGridLoop 1.6s ease-in-out infinite"    : "nbGrid 0.75s ease-out forwards";
-  const SPARKS = [{left:"22%",top:"38%",d:0},{left:"62%",top:"52%",d:90},{left:"44%",top:"18%",d:160},{left:"75%",top:"28%",d:50},{left:"33%",top:"66%",d:220},{left:"82%",top:"60%",d:130},{left:"15%",top:"72%",d:300}];
+  const rep      = loop ? "infinite" : "forwards";
+  const traceDur = loop ? "2.0s"     : "0.85s";
+  const cycleDur = loop ? "1.7s"     : "0.85s";
+  // 中心へ収束する光の点（開始オフセットを円状に配置）
+  const DOTS = Array.from({length: 12}, (_, i) => {
+    const a = (i / 12) * Math.PI * 2, r = 62 + ((i * 13) % 26);
+    return { sx: `${Math.round(Math.cos(a) * r)}px`, sy: `${Math.round(Math.sin(a) * r)}px`, d: (i % 6) * 90 };
+  });
   return (
     <div style={S.scanOverlay}>
-      <div style={{...S.scanGrid, animation:grid}}/>
-      <div style={S.scanRadarWrap}><div style={S.scanRadar}/></div>
-      {/* 掃引の余韻（光ったエリア）＋ レーザー本体 */}
-      {loop
-        ? <div style={S.scanBeamBox}><div style={{...S.scanTrail, animation:trail}}/><div style={{...S.scanLine, top:"auto", animation:beam}}/></div>
-        : <><div style={{...S.scanLine, animation:beam}}/><div style={{...S.scanLine, animation:beam, animationDelay:"0.15s", opacity:0.6}}/></>
-      }
-      {/* 四隅のロックオン照準 */}
-      {["tl","tr","bl","br"].map((k,i)=>(
-        <div key={k} style={{...S.scanBracket, ...S.brPos[k], animation:`nbBracket 0.5s ease-out ${loop?"both":"forwards"}`, animationDelay:`${i*70}ms`}}/>
+      {/* C：輪郭トレース（薄い枠＋走る光の帯） */}
+      <svg style={S.scanTraceSvg} viewBox="0 0 100 100" preserveAspectRatio="none">
+        <rect x="2" y="2" width="96" height="96" rx="7" vectorEffect="non-scaling-stroke" style={S.scanTraceBase}/>
+        <rect x="2" y="2" width="96" height="96" rx="7" vectorEffect="non-scaling-stroke"
+              style={{...S.scanTraceLit, animation:`nbTraceMove ${traceDur} linear ${rep}`}}/>
+      </svg>
+      {/* D：パーティクル収束 */}
+      {DOTS.map((p, i) => (
+        <div key={i} style={{...S.scanDot, "--sx":p.sx, "--sy":p.sy,
+          animation:`nbConverge ${cycleDur} ease-in ${rep}`, animationDelay:`${p.d}ms`}}/>
       ))}
-      {SPARKS.map((p,i)=>(
-        <div key={i} style={{...S.sparkle, left:p.left, top:p.top, animation:`nbSparkle 0.6s ease-out ${loop?"infinite":"forwards"}`, animationDelay:`${p.d + (loop?400:0)}ms`}}>✦</div>
-      ))}
+      {/* 認識できた！のフラッシュ */}
+      <div style={{...S.scanReco, animation:`nbReco ${cycleDur} ease-in ${rep}`}}/>
       {!loop && <div style={S.scanRipple}/>}
-      {!loop && <div style={S.scanFlash}/>}
     </div>
   );
 }
@@ -1296,6 +1313,12 @@ const S = {
   sparkle: { position:"absolute", fontSize:18, color:"#fff", textShadow:"0 0 10px rgba(120,220,255,1), 0 0 20px rgba(150,120,255,0.9)", animation:"nbSparkle 0.6s ease-out forwards", pointerEvents:"none" },
   scanRipple: { position:"absolute", top:"50%", left:"50%", width:40, height:40, marginTop:-20, marginLeft:-20, borderRadius:"50%", border:"3px solid rgba(130,225,255,0.95)", boxShadow:"0 0 18px rgba(120,200,255,0.8)", animation:"nbRipple 0.7s ease-out forwards" },
   scanFlash: { position:"absolute", inset:0, background:"radial-gradient(circle, rgba(215,238,255,0.6), rgba(150,175,255,0.25))", animation:"nbFlash 0.7s ease-out forwards" },
+  // C＋D スキャン：輪郭トレース＋パーティクル収束＋認識フラッシュ
+  scanTraceSvg: { position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none" },
+  scanTraceBase: { fill:"none", stroke:"rgba(90,210,255,0.30)", strokeWidth:2 },
+  scanTraceLit: { fill:"none", stroke:"rgba(140,238,255,1)", strokeWidth:2.6, strokeLinecap:"round", strokeDasharray:"24 376", filter:"drop-shadow(0 0 5px rgba(90,200,255,0.95)) drop-shadow(0 0 12px rgba(130,110,255,0.55))" },
+  scanDot: { position:"absolute", top:"50%", left:"50%", width:6, height:6, marginTop:-3, marginLeft:-3, borderRadius:"50%", background:"#c8f2ff", boxShadow:"0 0 8px rgba(120,220,255,1), 0 0 14px rgba(130,110,255,0.7)", pointerEvents:"none" },
+  scanReco: { position:"absolute", inset:0, background:"radial-gradient(circle, rgba(210,240,255,0.75), rgba(150,175,255,0.25) 55%, transparent 70%)", pointerEvents:"none" },
   // レーダー：円錐状のスイープ光（薄いブルーが回る）
   scanRadarWrap: { position:"absolute", top:"50%", left:"50%", width:"180%", height:"180%", marginTop:"-90%", marginLeft:"-90%", overflow:"hidden", pointerEvents:"none" },
   scanRadar: { position:"absolute", inset:0, background:"conic-gradient(from 0deg, transparent 0deg, rgba(90,200,255,0.28) 34deg, transparent 60deg)", animation:"nbRadar 2.4s linear infinite", filter:"blur(2px)" },
