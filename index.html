@@ -412,19 +412,45 @@ function App() {
     return null;
   }
 
+  // URLのページ本文そのものを読む（＝メタだけでなく中身で分類する）。
+  // Jina Reader(r.jina.ai)は任意ページを整形テキストで返し、CORSも許可（ブラウザから直接叩ける）。
+  // 読めない時（ログイン必須・SPA・SNS投稿・レート制限・タイムアウト）は null → メタ+ドメインにフォールバック。
+  async function fetchPageText(url) {
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`https://r.jina.ai/${url}`, {
+        headers: { "X-Return-Format": "text" },
+        signal: ctrl.signal,
+      });
+      clearTimeout(to);
+      if (!res.ok) return null;
+      let t = (await res.text()).trim();
+      if (!t) return null;
+      // 分類に必要な冒頭だけ使う（トークン節約）。ナビ等のノイズは冒頭に混じるが本文が続く。
+      return t.slice(0, 3500);
+    } catch (e) { return null; }
+  }
+
   async function analyze(text, img) {
     if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); return; }
     setBusy(true); setError(""); setResult(null);
     try {
       const sourceUrl = extractUrl(text);
-      let urlMeta = null;
+      let urlMeta = null, pageText = null;
       if (sourceUrl) {
-        urlMeta = await fetchUrlMeta(sourceUrl);
+        // メタ情報と本文を同時取得（本文が読めれば分類はほぼそれで決まる）
+        [urlMeta, pageText] = await Promise.all([fetchUrlMeta(sourceUrl), fetchPageText(sourceUrl)]);
       }
 
       let contextText = text || "";
       if (urlMeta) {
         contextText += `\n\n[ページ情報]\nURL: ${sourceUrl}\nタイトル: ${urlMeta.title}\n発信元: ${urlMeta.publisher}\n説明: ${urlMeta.description}`;
+      } else if (sourceUrl) {
+        contextText += `\n\n[ページ情報]\nURL: ${sourceUrl}`;
+      }
+      if (pageText) {
+        contextText += `\n\n[ページ本文(抜粋)]\n${pageText}`;
       }
 
       const imgInstruction = img
@@ -436,10 +462,10 @@ function App() {
 - その他：具体的な名称・特徴
 「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。`
         : sourceUrl
-        ? `URLが放り込まれました。ページ情報（タイトル・発信元・説明）とURLのドメインから、正体を特定して分類してください：
-- **ドメインが強い手がかり**：クラシル/クックパッド/DELISH KITCHEN=recipe、食べログ/ぐるなび/Googleマップ/Retty=basho、Amazon/楽天/メルカリ/ZOZO/価格.com等のEC=mono、新聞・ニュースメディア=news、note/個人ブログ/YouTube/ハウツー記事=joho、connpass/Peatix/セミナー告知=event。
-- **titleにはページの主題**（記事名・商品名・店名など）を具体的に入れる。「記事」「動画」等の一般名詞で終わらせない。
-- 説明文が薄い時はドメインとタイトルから最も妥当なカテゴリを選ぶ（確信が持てなければconfidenceを下げる）。
+        ? `URLが放り込まれました。**[ページ本文(抜粋)]があれば、それを最優先で読んで**正体を特定し分類してください（本文が正・メタ情報は補助）：
+- 本文からページの主題（記事名・商品名・店名・レシピ名・イベント名）を具体的に読み取り、titleに入れる。「記事」「動画」等の一般名詞で終わらせない。
+- 本文が無い／薄い時だけ、**ドメインを手がかり**に：クラシル/クックパッド/DELISH KITCHEN=recipe、食べログ/ぐるなび/Googleマップ/Retty=basho、Amazon/楽天/メルカリ/ZOZO/価格.com等のEC=mono、新聞・ニュースメディア=news、note/個人ブログ/YouTube/ハウツー記事=joho、connpass/Peatix/セミナー告知=event。
+- 本文に無いことは書かない（ハレーション厳禁）。確信が持てなければconfidenceを下げる。
 放り込まれた内容:\n"""${contextText}"""`
         : `放り込まれたテキスト:\n"""${contextText}"""`;
 
@@ -483,8 +509,8 @@ ${imgInstruction}
           "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify({
-          // 写真・URLは識別精度が段違いのSonnetを自動使用（薄いページ情報＋ドメイン推論に強い）。素のテキストのみ既定モデル(安いHaiku)。
-          model: (img || sourceUrl) ? "claude-sonnet-4-6" : model,
+          // 写真は画像認識が段違いのSonnet。URL/テキストはページ本文を読ませるので既定モデル(安いHaiku)で十分。
+          model: img ? "claude-sonnet-4-6" : model,
           max_tokens: 1000,
           messages: [{ role: "user", content }],
         }),
