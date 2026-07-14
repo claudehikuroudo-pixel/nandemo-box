@@ -209,34 +209,24 @@ function idbSetItems(items) {
   }));
 }
 
-// ── スキャン演出（AI解析のシグネチャー体験・C＋D型） ──
-// C＝輪郭トレース：被写体のフチを光がなぞる＝「AIが中身を認識してる」を絵にする（このアプリの核）
-// D＝パーティクル収束→認識フラッシュ：光の点が中心に集まり「認識できた！」で締める
+// ── スキャン演出（AI解析のシグネチャー体験・C型＝輪郭トレース） ──
+// C＝輪郭トレース：被写体のフチを光の帯がなぞる＝「AIが中身を認識してる」を絵にする（このアプリの核）。
+//    ＋薄いレーザーが上から下に掃引して"読んでる"感を足す。
 // loop=true：解析中ずっと繰り返す（時間可変のAPI待ち向け）／loop=false：一回で締める（カードの画像検索）
 function ScanFX({ loop }) {
   const rep      = loop ? "infinite" : "forwards";
   const traceDur = loop ? "2.0s"     : "0.85s";
-  const cycleDur = loop ? "1.7s"     : "0.85s";
-  // 中心へ収束する光の点（開始オフセットを円状に配置）
-  const DOTS = Array.from({length: 12}, (_, i) => {
-    const a = (i / 12) * Math.PI * 2, r = 62 + ((i * 13) % 26);
-    return { sx: `${Math.round(Math.cos(a) * r)}px`, sy: `${Math.round(Math.sin(a) * r)}px`, d: (i % 6) * 90 };
-  });
+  const beam     = loop ? "nbScan 1.6s linear infinite" : "nbScan 0.85s cubic-bezier(0.45,0,0.5,1) forwards";
   return (
     <div style={S.scanOverlay}>
-      {/* C：輪郭トレース（薄い枠＋走る光の帯） */}
+      {/* C：輪郭トレース（薄い枠＋フチを走る光の帯） */}
       <svg style={S.scanTraceSvg} viewBox="0 0 100 100" preserveAspectRatio="none">
         <rect x="2" y="2" width="96" height="96" rx="7" vectorEffect="non-scaling-stroke" style={S.scanTraceBase}/>
         <rect x="2" y="2" width="96" height="96" rx="7" vectorEffect="non-scaling-stroke"
               style={{...S.scanTraceLit, animation:`nbTraceMove ${traceDur} linear ${rep}`}}/>
       </svg>
-      {/* D：パーティクル収束 */}
-      {DOTS.map((p, i) => (
-        <div key={i} style={{...S.scanDot, "--sx":p.sx, "--sy":p.sy,
-          animation:`nbConverge ${cycleDur} ease-in ${rep}`, animationDelay:`${p.d}ms`}}/>
-      ))}
-      {/* 認識できた！のフラッシュ */}
-      <div style={{...S.scanReco, animation:`nbReco ${cycleDur} ease-in ${rep}`}}/>
+      {/* 薄いレーザー掃引 */}
+      <div style={{...S.scanLine, opacity:0.7, animation:beam}}/>
       {!loop && <div style={S.scanRipple}/>}
     </div>
   );
