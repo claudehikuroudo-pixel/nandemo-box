@@ -208,6 +208,30 @@ function idbSetItems(items) {
     tx.onerror = () => reject(tx.error);
   }));
 }
+// 添付ファイル(主にPDF)は本体itemsに詰めず別キーでblob保存（＝items JSONを軽く保ち"消えない"を守る）
+function idbPutAtt(key, blob) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(blob, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+function idbGetAtt(key) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const r = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(key);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  }));
+}
+function idbDelAtt(key) {
+  return idbOpen().then(db => new Promise((resolve) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  }));
+}
 
 // ── スキャン演出（AI解析のシグネチャー体験・C型＝輪郭トレース） ──
 // C＝輪郭トレース：被写体のフチを光の帯がなぞる＝「AIが中身を認識してる」を絵にする（このアプリの核）。
@@ -266,9 +290,14 @@ function App() {
   const [addEndTime, setAddEndTime] = useState("");    // 終了時刻
   const [addAllDay, setAddAllDay] = useState(false);   // 終日
   const [addRemind, setAddRemind] = useState("none");  // リマインド: none/morning/b10/b60/prev
+  const [addAtts, setAddAtts] = useState([]);          // 作成中の予定に添付する関連 [{t,url|data|bid,name}]
+  const [attachMenuId, setAttachMenuId] = useState(null); // 既存予定に後から添付するときの対象id
   const notifiedRef = useRef(new Set()); // 通知済みidを記録（重複通知防止）
   const fileRef = useRef(null);
   const cameraRef = useRef(null); // 直行カメラ用input
+  const attImgRef = useRef(null); // 予定への写真添付
+  const attPdfRef = useRef(null); // 予定へのPDF添付
+  const attCtxRef = useRef(null); // 添付先: {mode:'new'} または {mode:'existing', id}
   const pendingGeoRef = useRef(null); // 撮影時の位置情報 {lat,lng,place} を次のconfirmAddで付与
   const loadedRef = useRef(false);
   const calScrollRef = useRef(null);
@@ -623,7 +652,58 @@ ${JSON.stringify(list)}
     return `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())} ${p(base.getHours())}:${p(base.getMinutes())}`;
   }
   function resetAddForm() {
-    setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event");
+    setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event"); setAddAtts([]);
+  }
+
+  // ── 予定への添付（写真/URL/PDF）。作成中(mode:new)＝addAtts、既存(mode:existing,id)＝item.attachments ──
+  function routeAttach(att) {
+    const ctx = attCtxRef.current;
+    if (!ctx) return;
+    if (ctx.mode === "new") {
+      setAddAtts(prev => [...prev, att]);
+    } else if (ctx.mode === "existing") {
+      setItems(prev => prev.map(it => it.id === ctx.id ? { ...it, attachments: [...(it.attachments || []), att] } : it));
+    }
+  }
+  function triggerAttach(kind, ctx) {
+    attCtxRef.current = ctx;
+    if (kind === "img") { if (attImgRef.current) { attImgRef.current.value = ""; attImgRef.current.click(); } }
+    else if (kind === "pdf") { if (attPdfRef.current) { attPdfRef.current.value = ""; attPdfRef.current.click(); } }
+    else if (kind === "url") {
+      const u = window.prompt("URLを貼り付け（この予定に紐づけます）");
+      if (u && u.trim()) { let v = u.trim(); if (!/^https?:\/\//i.test(v)) v = "https://" + v; routeAttach({ t: "url", url: v }); }
+      setAttachMenuId(null);
+    }
+  }
+  function onAttImg(e) {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { routeAttach({ t: "img", data: r.result, name: f.name }); setAttachMenuId(null); };
+    r.readAsDataURL(f);
+  }
+  async function onAttPdf(e) {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const key = `att:${nextId.current++}`;
+    try { await idbPutAtt(key, f); routeAttach({ t: "pdf", bid: key, name: f.name }); } catch (err) { alert("PDFの保存に失敗しました"); }
+    setAttachMenuId(null);
+  }
+  function removeNewAtt(idx) {
+    setAddAtts(prev => { const a = prev[idx]; if (a && a.t === "pdf" && a.bid) idbDelAtt(a.bid); return prev.filter((_, i) => i !== idx); });
+  }
+  function removeItemAtt(id, idx) {
+    setItems(prev => prev.map(it => {
+      if (it.id !== id) return it;
+      const a = (it.attachments || [])[idx]; if (a && a.t === "pdf" && a.bid) idbDelAtt(a.bid);
+      return { ...it, attachments: (it.attachments || []).filter((_, i) => i !== idx) };
+    }));
+  }
+  async function openAtt(att) {
+    if (att.t === "url") { window.open(att.url, "_blank", "noopener"); }
+    else if (att.t === "img") { setLightbox(att.data); }
+    else if (att.t === "pdf") {
+      try { const blob = await idbGetAtt(att.bid); if (blob) window.open(URL.createObjectURL(blob), "_blank", "noopener"); }
+      catch (e) { alert("PDFを開けませんでした"); }
+    }
   }
   function confirmDayAdd() {
     if (!addDay || !addTitle.trim()) return;
@@ -642,6 +722,7 @@ ${JSON.stringify(list)}
       const ra = remindAtFor(addDay, addTime, addAllDay, addRemind);
       if (ra) item.remindAt = ra;
     }
+    if (addAtts.length) item.attachments = addAtts;     // 作成時に付けた関連(写真/URL/PDF)
     setItems(prev => [item, ...prev]);
     setSelDay(addDay); // 追加した日を選択状態に（下のアジェンダで見えるように）
     resetAddForm();
@@ -785,7 +866,22 @@ ${JSON.stringify(list)}
                               {it.endTime && !it.allDay && <div style={{fontSize:9, fontWeight:600, color:"#a8a8b4", marginTop:1}}>–{it.endTime}</div>}
                             </div>
                             <span style={{...S.calEvBar, background:c.grad, ...(it.done?{opacity:0.35}:{})}}/>
-                            <div style={{minWidth:0, flex:1}}><div style={{...S.calEvTitle, ...(it.done?S.taskTitleDone:{})}}>{it.remind?"🔔 ":""}{it.title}</div>{it.meta && <div style={S.calEvMeta}>{it.meta}</div>}</div>
+                            <div style={{minWidth:0, flex:1}}>
+                              <div style={{...S.calEvTitle, ...(it.done?S.taskTitleDone:{})}}>{it.remind?"🔔 ":""}{it.title}</div>
+                              {it.meta && <div style={S.calEvMeta}>{it.meta}</div>}
+                              {it.attachments && it.attachments.length>0 && (
+                                <div style={S.attListSm}>
+                                  {it.attachments.map((a,i)=>(
+                                    <div key={i} style={S.attChipSm} onClick={()=>openAtt(a)}>
+                                      {a.t==="img" ? <img src={a.data} alt="" style={S.attThumbSm}/> : <span>{a.t==="pdf"?"📄":"🔗"}</span>}
+                                      <span style={S.attNameSm}>{a.t==="url" ? a.url.replace(/^https?:\/\//,"").slice(0,18) : (a.name||"写真")}</span>
+                                      <span style={S.attXSm} onClick={e=>{e.stopPropagation(); removeItemAtt(it.id,i);}}>✕</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <span style={S.attPin} onClick={()=>setAttachMenuId(it.id)} title="関連を追加">📎</span>
                             {it.category==="task" && <span style={{...S.taskCheck, marginRight:0, ...(it.done?S.taskCheckOn:{})}} onClick={()=>toggleTask(it.id)}>✓</span>}
                           </div>
                         );
@@ -961,6 +1057,9 @@ ${JSON.stringify(list)}
           })}
         </div>
 
+        <input ref={attImgRef} type="file" accept="image/*" style={{display:"none"}} onChange={onAttImg} />
+        <input ref={attPdfRef} type="file" accept="application/pdf" style={{display:"none"}} onChange={onAttPdf} />
+
         <div style={S.dock}>
           <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={pickCamera} />
           <div style={S.dockRow}>
@@ -1019,11 +1118,47 @@ ${JSON.stringify(list)}
                   <div key={k} onClick={()=>setAddRemind(k)} style={{...S.rChip, ...(addRemind===k?S.rChipOn:{})}}>{l}</div>
                 ))}
               </div>
+              <div style={S.remindTitle}>📎 関連（この予定に紐づけ）</div>
+              <div style={S.chipRow}>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("img",{mode:"new"})}>📷 写真</div>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("url",{mode:"new"})}>🔗 URL</div>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("pdf",{mode:"new"})}>📄 PDF</div>
+              </div>
+              {addAtts.length > 0 && (
+                <div style={S.attList}>
+                  {addAtts.map((a,i)=>(
+                    <div key={i} style={S.attChip}>
+                      {a.t==="img" ? <img src={a.data} alt="" style={S.attThumb}/> : <span style={S.attIcon}>{a.t==="pdf"?"📄":"🔗"}</span>}
+                      <span style={S.attName}>{a.t==="url" ? a.url.replace(/^https?:\/\//,"").slice(0,26) : (a.name||"写真")}</span>
+                      <span style={S.attX} onClick={()=>removeNewAtt(i)}>✕</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setAddDay(null)}>やめる</button>
                 <button style={{...S.btnMain, ...(!addTitle.trim()?{opacity:0.5}:{})}} onClick={confirmDayAdd} disabled={!addTitle.trim()}>この日に追加 ✓</button>
               </div>
               {addRemind !== "none" && <div style={S.remindNote}>※通知は「アプリを開いている/開いた時」に出ます。閉じてても鳴る通知は今後サーバー対応で実装予定。</div>}
+            </div>
+          </div>
+        )}
+
+        {/* 既存の予定に後から関連を追加 */}
+        {attachMenuId !== null && (
+          <div style={S.sheetWrap} onClick={()=>setAttachMenuId(null)}>
+            <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+              <div style={S.sheetGrip}/>
+              <div style={S.sheetTitle}>📎 この予定に紐づける</div>
+              <div style={S.sheetSub}>写真・URL・PDF を後から追加できます。</div>
+              <div style={S.chipRow}>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("img",{mode:"existing",id:attachMenuId})}>📷 写真</div>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("url",{mode:"existing",id:attachMenuId})}>🔗 URL</div>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("pdf",{mode:"existing",id:attachMenuId})}>📄 PDF</div>
+              </div>
+              <div style={S.sheetBtns}>
+                <button style={S.btnGhost} onClick={()=>setAttachMenuId(null)}>閉じる</button>
+              </div>
             </div>
           </div>
         )}
@@ -1447,6 +1582,19 @@ const S = {
   chipRow: { display:"flex", flexWrap:"wrap", gap:7, marginBottom:12 },
   rChip: { fontSize:11.5, fontWeight:700, padding:"7px 12px", borderRadius:20, border:"1px solid #e8e8ee", background:"#fff", color:"#7a7a8a", cursor:"pointer", userSelect:"none" },
   rChipOn: { background:"#eef2ff", borderColor:"#c3cffc", color:"#4a63d8" },
+  attAddBtn: { fontSize:12, fontWeight:700, padding:"8px 13px", borderRadius:12, border:"1.5px dashed #d8d8e2", background:"#fafafb", color:"#666", cursor:"pointer", userSelect:"none" },
+  attList: { display:"flex", flexWrap:"wrap", gap:8, marginBottom:12 },
+  attChip: { display:"flex", alignItems:"center", gap:6, background:"#fff", border:"1px solid #e8e8ee", borderRadius:10, padding:"5px 8px", maxWidth:"100%" },
+  attThumb: { width:26, height:26, borderRadius:6, objectFit:"cover", flexShrink:0 },
+  attIcon: { fontSize:15 },
+  attName: { fontSize:11.5, fontWeight:600, color:"#444", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:160 },
+  attX: { fontSize:11, color:"#b0b0bc", cursor:"pointer", padding:"0 2px", fontWeight:700 },
+  attListSm: { display:"flex", flexWrap:"wrap", gap:6, marginTop:5 },
+  attChipSm: { display:"flex", alignItems:"center", gap:4, background:"#f4f4f8", borderRadius:8, padding:"3px 6px", cursor:"pointer", maxWidth:"100%" },
+  attThumbSm: { width:18, height:18, borderRadius:4, objectFit:"cover" },
+  attNameSm: { fontSize:10.5, fontWeight:600, color:"#5a5a6a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:120 },
+  attXSm: { fontSize:9.5, color:"#bcbcc8", fontWeight:700, padding:"0 1px" },
+  attPin: { fontSize:14, color:"#a0a0b0", cursor:"pointer", padding:"2px 4px", flexShrink:0, alignSelf:"flex-start" },
   help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
 };
 
