@@ -269,6 +269,9 @@ function App() {
   const [menuId, setMenuId] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [resultDate, setResultDate] = useState(()=>toDateStr(new Date()));
+  const [resultTime, setResultTime] = useState("");   // AIが読み取った開始時刻
+  const [resultEnd, setResultEnd] = useState("");     // AIが読み取った終了時刻
+  const [resultPlace, setResultPlace] = useState(""); // AIが読み取った場所
   const [scanning, setScanning] = useState(null);
   const [askOpen, setAskOpen] = useState(false);
   const [askInput, setAskInput] = useState("");
@@ -486,6 +489,7 @@ function App() {
 - 商品・時計・ガジェット・家電・服・コスメなら：**ブランド名＋型番/モデル名を最優先で特定**する。ロゴ・刻印・文字盤・タグ・パッケージ・製品名の表記を丁寧に読み取る。参考価格も分かれば。
   例：「SEIKO プロスペックス SBDC181」「Apple Watch Series 9」「ダイソン V12」のように**型番・世代まで**踏み込む。
 - 場所・店・カフェ・レストランなら：店名・場所・ジャンル
+- **イベント案内・チラシ・予定のスクショ（ライブ/セミナー/勉強会/予約確認/招待状など）なら：イベント名・日付・開始/終了時刻・会場/場所を必ず読み取る**（＝予定として登録できるように）
 - スクショ・SNS・記事なら：タイトルと主要情報
 - その他：具体的な名称・特徴
 「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。`
@@ -517,9 +521,10 @@ ${imgInstruction}
 - **確信が持てない時だけ**、最有力をtitleにしつつmetaの冒頭に「候補: A / B」と2〜3個の候補を併記し、confidenceを正直に下げる。
 - **searchQueryは「それで検索すれば一発で見つかる」語にする**（型番・品番・正式名称を優先。写真の商品なら「ブランド 型番」）。
 - 読み取れた事実だけを書く。存在しない型番や店名をでっち上げない（ハレーション厳禁）。
+- **予定(event)/タスク(task)は「いつ・どこで」をスケジュールに入れられるよう抽出する**：本文・画像(チラシ/スクショ/案内)から日付・開始時刻・終了時刻・場所(会場/店名/住所)を読み取り、下記time/endTime/placeに入れる。読み取れないものだけ空文字。時刻は24時間HH:MM。「19:00〜21:00」なら開始と終了を両方。
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。特定に迷う時は先頭に『候補: A / B』を併記","chip":"価格or日時or状態の短いラベル","searchQuery":"それを検索で一発で見つける最適キーワード(型番・品番・正式名称を優先。titleより検索向けに)","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
+{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。特定に迷う時は先頭に『候補: A / B』を併記","chip":"価格or日時or状態の短いラベル","searchQuery":"それを検索で一発で見つける最適キーワード(型番・品番・正式名称を優先。titleより検索向けに)","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
 
       const content = [];
       if (img) {
@@ -553,6 +558,9 @@ ${imgInstruction}
       const parsed = JSON.parse(txt);
       if (!CATS[parsed.category]) parsed.category = "joho";
       if (parsed.date) setResultDate(parsed.date);
+      setResultTime(parsed.time || "");
+      setResultEnd(parsed.endTime || "");
+      setResultPlace(parsed.place || "");
       // URL：入力から抽出。写真のみの場合：Google検索URLを自動生成
       parsed.sourceUrl = sourceUrl
         || (img ? `https://www.google.com/search?q=${encodeURIComponent(parsed.searchQuery || parsed.title)}` : null);
@@ -735,12 +743,18 @@ ${JSON.stringify(list)}
   function confirmAdd() {
     if (!result) return;
     const item = { id: nextId.current++, ...result };
-    if ((result.category==="event"||result.category==="task") && resultDate) item.date = resultDate;
+    // AIが読み取った/ユーザーが直した「いつ・どこ」を予定フィールドに確定
+    if (result.category==="event"||result.category==="task") {
+      if (resultDate) item.date = resultDate;
+      if (resultTime) item.time = resultTime; else delete item.time;
+      if (result.category==="event" && resultEnd) item.endTime = resultEnd; else delete item.endTime;
+    } else { delete item.time; delete item.endTime; }
+    if (resultPlace) item.place = resultPlace; else delete item.place;
     item.added = toDateStr(new Date());
     if (pendingGeoRef.current) item.geo = pendingGeoRef.current; // 撮った場所（アルバム逆引き用）
     setItems(prev => [item, ...prev]);
     setResult(null); setInput(""); setImage(null); setSheet(false);
-    setResultDate(toDateStr(new Date()));
+    setResultDate(toDateStr(new Date())); setResultTime(""); setResultEnd(""); setResultPlace("");
     pendingGeoRef.current = null; setPendingPlace("");
   }
   function handleImageSearch(e, item) {
@@ -869,6 +883,9 @@ ${JSON.stringify(list)}
                             <div style={{minWidth:0, flex:1}}>
                               <div style={{...S.calEvTitle, ...(it.done?S.taskTitleDone:{})}}>{it.remind?"🔔 ":""}{it.title}</div>
                               {it.meta && <div style={S.calEvMeta}>{it.meta}</div>}
+                              {it.place && (
+                                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(it.place)}`} target="_blank" rel="noopener noreferrer" style={S.calEvPlace} onClick={e=>e.stopPropagation()}>📍 {it.place}</a>
+                              )}
                               {it.attachments && it.attachments.length>0 && (
                                 <div style={S.attListSm}>
                                   {it.attachments.map((a,i)=>(
@@ -1329,6 +1346,33 @@ ${JSON.stringify(list)}
                       </div>
                       <input type="date" style={{...S.dateInput,...(result.date?{borderColor:"#22c55e"}:{})}}
                         value={resultDate} onChange={e=>setResultDate(e.target.value)} />
+                      {result.category==="event" && (
+                        <>
+                          <div style={S.fieldLabel}>
+                            時刻
+                            {result.time && <span style={{marginLeft:6,fontSize:10,color:"#22c55e",fontWeight:700}}>✓ AIが読み取り済み</span>}
+                          </div>
+                          <div style={S.addRow}>
+                            <input type="time" style={{...S.timeInput,...(result.time?{borderColor:"#22c55e"}:{})}} value={resultTime} onChange={e=>setResultTime(e.target.value)} />
+                            <span style={{fontSize:14, color:"#b0b0bc", fontWeight:700}}>→</span>
+                            <input type="time" style={S.timeInput} value={resultEnd} onChange={e=>setResultEnd(e.target.value)} />
+                          </div>
+                        </>
+                      )}
+                      {result.category==="task" && (
+                        <>
+                          <div style={S.fieldLabel}>時刻（任意）</div>
+                          <div style={S.addRow}>
+                            <input type="time" style={S.timeInput} value={resultTime} onChange={e=>setResultTime(e.target.value)} />
+                          </div>
+                        </>
+                      )}
+                      <div style={S.fieldLabel}>
+                        場所
+                        {result.place && <span style={{marginLeft:6,fontSize:10,color:"#22c55e",fontWeight:700}}>✓ AIが読み取り済み</span>}
+                      </div>
+                      <input type="text" placeholder="会場・店名・住所（あれば）" style={{...S.dateInput,...(result.place?{borderColor:"#22c55e"}:{})}}
+                        value={resultPlace} onChange={e=>setResultPlace(e.target.value)} />
                     </>
                   )}
                   <div style={S.reclassLabel}>違ったら選び直す</div>
@@ -1429,6 +1473,7 @@ const S = {
   calEvTime: { fontSize:11, fontWeight:700, color:"#6a6a7a", width:42, flexShrink:0 },
   calEvBar: { width:3, height:26, borderRadius:2, flexShrink:0 },
   calEvTitle: { fontSize:12.5, fontWeight:600, color:"#1a1a24" }, calEvMeta:{ fontSize:10, color:"#a0a0b0", marginTop:1 },
+  calEvPlace: { display:"inline-block", fontSize:10.5, fontWeight:700, color:"#1690d8", marginTop:2, textDecoration:"none" },
   wkCard: { margin:"10px 18px 0", padding:"12px 15px", borderRadius:20, background:"linear-gradient(135deg,rgba(63,224,138,0.12),rgba(31,200,176,0.10))", border:"1px solid rgba(47,216,122,0.28)", boxShadow:"0 8px 26px rgba(60,180,120,0.10)" },
   wkHead: { display:"flex", alignItems:"center", justifyContent:"space-between", fontSize:12.5, fontWeight:800, color:"#1aa85c", marginBottom:6 },
   wkDismiss: { fontSize:11, fontWeight:700, color:"#a0a0aa", cursor:"pointer", userSelect:"none" },
