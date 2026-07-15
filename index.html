@@ -262,8 +262,10 @@ function App() {
   const [weekendHide, setWeekendHide] = useState(()=>{ try{return localStorage.getItem("nb_weekend_dismissed")===toDateStr(new Date());}catch(e){return false;} }); // 週末そっと提案を「また今度」で今日は非表示
   const [addTitle, setAddTitle] = useState("");
   const [addType, setAddType] = useState("event"); // event=予定 / task=タスク
-  const [addTime, setAddTime] = useState("");
-  const [addRemind, setAddRemind] = useState(false);
+  const [addTime, setAddTime] = useState("");          // 開始時刻
+  const [addEndTime, setAddEndTime] = useState("");    // 終了時刻
+  const [addAllDay, setAddAllDay] = useState(false);   // 終日
+  const [addRemind, setAddRemind] = useState("none");  // リマインド: none/morning/b10/b60/prev
   const notifiedRef = useRef(new Set()); // 通知済みidを記録（重複通知防止）
   const fileRef = useRef(null);
   const cameraRef = useRef(null); // 直行カメラ用input
@@ -306,8 +308,15 @@ function App() {
       const now = new Date();
       const todayStr = toDateStr(now);
       const hm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const nowStr = `${todayStr} ${hm}`;
       (items || []).forEach(it => {
-        if (it.remind && it.date === todayStr && it.time && it.time <= hm && !notifiedRef.current.has(it.id)) {
+        if (notifiedRef.current.has(it.id)) return;
+        if (it.remindAt) {                                         // プリセット式
+          if (it.remindAt.slice(0, 10) === todayStr && nowStr >= it.remindAt) {
+            notifiedRef.current.add(it.id);
+            try { new Notification("なんでも箱 ⏰", { body: `${it.time || ""} ${it.title}`.trim() }); } catch(e){}
+          }
+        } else if (it.remind && it.date === todayStr && it.time && it.time <= hm) { // 旧データ互換
           notifiedRef.current.add(it.id);
           try { new Notification("なんでも箱 ⏰", { body: `${it.time} ${it.title}` }); } catch(e){}
         }
@@ -595,17 +604,47 @@ ${JSON.stringify(list)}
     setPlanId(null);
   }
   // 日付タップ→時刻＋やること/タスクを追加（通常のスケジューラー操作）
+  // リマインドのプリセット→実際に通知する日時(YYYY-MM-DD HH:MM)を計算
+  function remindAtFor(dateStr, startTime, allDay, preset) {
+    if (!preset || preset === "none") return null;
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    const p = n => String(n).padStart(2, "0");
+    let base;
+    if (preset === "morning") {
+      base = new Date(y, mo - 1, d, 7, 30);             // 当日朝7:30
+    } else {
+      let hh = 9, mm = 0;                               // 終日/時刻なしは9:00基準
+      if (!allDay && startTime) { const t = startTime.split(":"); hh = +t[0]; mm = +t[1]; }
+      base = new Date(y, mo - 1, d, hh, mm);
+      if (preset === "b10") base = new Date(base - 10 * 60000);
+      else if (preset === "b60") base = new Date(base - 60 * 60000);
+      else if (preset === "prev") base = new Date(base - 24 * 60 * 60000);
+    }
+    return `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())} ${p(base.getHours())}:${p(base.getMinutes())}`;
+  }
+  function resetAddForm() {
+    setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event");
+  }
   function confirmDayAdd() {
     if (!addDay || !addTitle.trim()) return;
-    if (addRemind && "Notification" in window && Notification.permission === "default") {
+    if (addRemind !== "none" && "Notification" in window && Notification.permission === "default") {
       try { Notification.requestPermission(); } catch(e){}
     }
     const item = { id: nextId.current++, category: addType, title: addTitle.trim(), date: addDay, added: toDateStr(new Date()) };
-    if (addTime) item.time = addTime;
-    if (addRemind) item.remind = true;
+    if (addType === "event") {
+      if (addAllDay) item.allDay = true;
+      else { if (addTime) item.time = addTime; if (addEndTime) item.endTime = addEndTime; }
+    } else {
+      if (addTime) item.time = addTime;                 // タスクは締切時刻(任意)
+    }
+    if (addRemind !== "none") {
+      item.remind = true;
+      const ra = remindAtFor(addDay, addTime, addAllDay, addRemind);
+      if (ra) item.remindAt = ra;
+    }
     setItems(prev => [item, ...prev]);
     setSelDay(addDay); // 追加した日を選択状態に（下のアジェンダで見えるように）
-    setAddDay(null); setAddTitle(""); setAddTime(""); setAddRemind(false); setAddType("event");
+    resetAddForm();
   }
   // やること（タスク）の完了トグル
   function toggleTask(id) {
@@ -657,7 +696,6 @@ ${JSON.stringify(list)}
   return (
     <div style={S.bg}>
       <div style={S.phone}>
-        <div style={S.sb}><span style={S.sbt}>なんでも箱</span><span style={S.sbi}>●●● ⛁</span></div>
 
         <div style={S.hd}>
           <div style={S.hdName}>なんでも<span style={S.accent}>箱</span></div>
@@ -734,7 +772,7 @@ ${JSON.stringify(list)}
                 <React.Fragment>
                   <div style={S.agendaHead}>
                     <span style={S.agendaDate}>{`${+sm}月${+sd}日（${wd}）`}{selDay===toDateStr(today) && <span style={S.agendaToday}>今日</span>}</span>
-                    <span style={S.addDayBtn} onClick={()=>{ setAddDay(selDay); setAddTitle(""); setAddTime(""); setAddType("event"); setAddRemind(false); }}>＋ 予定・タスク</span>
+                    <span style={S.addDayBtn} onClick={()=>{ setAddDay(selDay); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddType("event"); setAddRemind("none"); }}>＋ 予定・タスク</span>
                   </div>
                   {dayItems.length===0
                     ? <div style={S.agendaEmpty}>予定なし</div>
@@ -742,7 +780,10 @@ ${JSON.stringify(list)}
                         const c = CATS[it.category];
                         return (
                           <div key={it.id} style={S.calEv}>
-                            <div style={S.calEvTime}>{it.time || "終日"}</div>
+                            <div style={S.calEvTime}>
+                              {it.allDay ? "終日" : (it.time || (it.category==="task" ? "" : "終日"))}
+                              {it.endTime && !it.allDay && <div style={{fontSize:9, fontWeight:600, color:"#a8a8b4", marginTop:1}}>–{it.endTime}</div>}
+                            </div>
                             <span style={{...S.calEvBar, background:c.grad, ...(it.done?{opacity:0.35}:{})}}/>
                             <div style={{minWidth:0, flex:1}}><div style={{...S.calEvTitle, ...(it.done?S.taskTitleDone:{})}}>{it.remind?"🔔 ":""}{it.title}</div>{it.meta && <div style={S.calEvMeta}>{it.meta}</div>}</div>
                             {it.category==="task" && <span style={{...S.taskCheck, marginRight:0, ...(it.done?S.taskCheckOn:{})}} onClick={()=>toggleTask(it.id)}>✓</span>}
@@ -822,7 +863,7 @@ ${JSON.stringify(list)}
           const openPlan = (it) => {
             const map = { recipe:{type:"task",title:it.title+"を作る"}, basho:{type:"event",title:it.title}, mono:{type:"task",title:it.title+"を見に行く"} };
             const p = map[it.category] || {type:"task", title:it.title};
-            setAddDay(toDateStr(new Date())); setAddType(p.type); setAddTitle(p.title); setAddTime(""); setAddRemind(false);
+            setAddDay(toDateStr(new Date())); setAddType(p.type); setAddTitle(p.title); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none");
           };
           const invite = (it) => ({ recipe:`🍳 「${it.title}」作ってみる？`, basho:`📍 「${it.title}」行ってみる？`, mono:`🛍 「${it.title}」見に行く？` }[it.category] || `「${it.title}」どうですか？`);
           return (
@@ -947,19 +988,42 @@ ${JSON.stringify(list)}
               <input style={S.dateInput}
                 placeholder={addType==="event"?"何の予定？（例：美容院、打合せ）":"やること（例：請求書送る）"}
                 value={addTitle} onChange={e=>setAddTitle(e.target.value)} autoFocus />
-              <div style={S.addRow}>
-                <span style={S.addRowLabel}>⏰ 時刻</span>
-                <input type="time" style={S.timeInput} value={addTime} onChange={e=>setAddTime(e.target.value)} />
-                <label style={S.remindLabel}>
-                  <input type="checkbox" checked={addRemind} onChange={e=>setAddRemind(e.target.checked)} style={{marginRight:5}} />
-                  🔔 リマインド
-                </label>
+              {addType === "event" ? (
+                <>
+                  <div style={S.swRow} onClick={()=>setAddAllDay(v=>!v)}>
+                    <span style={S.swLabel}>終日</span>
+                    <div style={{...S.swTrack, ...(addAllDay?S.swTrackOn:{})}}><div style={{...S.swKnob, ...(addAllDay?S.swKnobOn:{})}}/></div>
+                  </div>
+                  {!addAllDay && (
+                    <div style={S.addRow}>
+                      <span style={S.addRowLabel}>開始</span>
+                      <input type="time" style={S.timeInput} value={addTime}
+                        onChange={e=>{
+                          const v=e.target.value; setAddTime(v);
+                          if (v && !addEndTime){ const [h,m]=v.split(":").map(Number); setAddEndTime(`${String((h+1)%24).padStart(2,'0')}:${String(m).padStart(2,'0')}`); }
+                        }} />
+                      <span style={{fontSize:14, color:"#b0b0bc", fontWeight:700}}>→</span>
+                      <input type="time" style={S.timeInput} value={addEndTime} onChange={e=>setAddEndTime(e.target.value)} />
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={S.addRow}>
+                  <span style={S.addRowLabel}>⏰ 時刻</span>
+                  <input type="time" style={S.timeInput} value={addTime} onChange={e=>setAddTime(e.target.value)} />
+                </div>
+              )}
+              <div style={S.remindTitle}>🔔 リマインド</div>
+              <div style={S.chipRow}>
+                {[["none","なし"],["morning","当日朝"],["b10","10分前"],["b60","1時間前"],["prev","前日"]].map(([k,l])=>(
+                  <div key={k} onClick={()=>setAddRemind(k)} style={{...S.rChip, ...(addRemind===k?S.rChipOn:{})}}>{l}</div>
+                ))}
               </div>
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setAddDay(null)}>やめる</button>
                 <button style={{...S.btnMain, ...(!addTitle.trim()?{opacity:0.5}:{})}} onClick={confirmDayAdd} disabled={!addTitle.trim()}>この日に追加 ✓</button>
               </div>
-              {addRemind && <div style={S.remindNote}>※通知は「アプリを開いている/開いた時」に出ます。閉じてても鳴る通知は今後サーバー対応で実装予定。</div>}
+              {addRemind !== "none" && <div style={S.remindNote}>※通知は「アプリを開いている/開いた時」に出ます。閉じてても鳴る通知は今後サーバー対応で実装予定。</div>}
             </div>
           </div>
         )}
@@ -1373,6 +1437,16 @@ const S = {
   timeInput: { flex:1, height:44, borderRadius:12, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:14, color:"#1a1a24", outline:"none" },
   remindLabel: { display:"flex", alignItems:"center", gap:6, fontSize:12.5, fontWeight:700, color:"#666", cursor:"pointer", userSelect:"none", whiteSpace:"nowrap" },
   remindNote: { fontSize:10.5, color:"#a0a0aa", lineHeight:1.6, background:"#f7f7fb", borderRadius:10, padding:"8px 10px", marginTop:-2, marginBottom:8 },
+  swRow: { display:"flex", alignItems:"center", gap:10, marginBottom:10, cursor:"pointer", userSelect:"none" },
+  swLabel: { fontSize:12.5, fontWeight:700, color:"#555" },
+  swTrack: { width:40, height:23, borderRadius:12, background:"#e0e0e8", position:"relative", transition:"background .18s" },
+  swTrackOn: { background:"#34c759" },
+  swKnob: { position:"absolute", top:2, left:2, width:19, height:19, borderRadius:"50%", background:"#fff", boxShadow:"0 1px 3px rgba(0,0,0,0.3)", transition:"left .18s" },
+  swKnobOn: { left:19 },
+  remindTitle: { fontSize:12.5, fontWeight:700, color:"#555", margin:"2px 0 7px" },
+  chipRow: { display:"flex", flexWrap:"wrap", gap:7, marginBottom:12 },
+  rChip: { fontSize:11.5, fontWeight:700, padding:"7px 12px", borderRadius:20, border:"1px solid #e8e8ee", background:"#fff", color:"#7a7a8a", cursor:"pointer", userSelect:"none" },
+  rChipOn: { background:"#eef2ff", borderColor:"#c3cffc", color:"#4a63d8" },
   help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
 };
 
