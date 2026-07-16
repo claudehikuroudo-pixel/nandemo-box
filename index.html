@@ -957,7 +957,11 @@ ${JSON.stringify(list)}
           return (
             <div style={S.taskSec}>
               <div style={{...S.taskSecHead, cursor:"pointer", userSelect:"none"}} onClick={()=>setTaskSecOpen(v=>!v)}>
-                <span>{taskSecOpen?"▾":"▸"} ✅ タスク</span><span style={S.taskCount}>{undone.length}</span>
+                <span>✅ タスク</span>
+                <span style={{display:"flex", alignItems:"center", gap:8}}>
+                  <span style={S.taskCount}>{undone.length}</span>
+                  <span style={{...S.taskFold, transform: taskSecOpen?"rotate(0deg)":"rotate(-90deg)"}}>⌄</span>
+                </span>
               </div>
               {taskSecOpen && (
                 <>
@@ -1523,8 +1527,9 @@ const S = {
   wkInvite: { fontSize:13, fontWeight:700, color:"#1a1a24", minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
   wkGo: { fontSize:11, fontWeight:800, color:"#1aa85c", background:"rgba(47,216,122,0.16)", borderRadius:9, padding:"5px 10px", whiteSpace:"nowrap", flexShrink:0 },
   taskSec: { margin:"6px 18px 0", padding:"12px 15px", borderRadius:20, background:"rgba(255,255,255,0.7)", backdropFilter:"blur(28px)", WebkitBackdropFilter:"blur(28px)", border:"1px solid rgba(255,255,255,0.9)", boxShadow:"0 8px 26px rgba(100,100,150,0.1)" },
-  taskSecHead: { display:"flex", alignItems:"center", gap:8, fontSize:12.5, fontWeight:800, color:"#2a2a38", marginBottom:6 },
+  taskSecHead: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, fontSize:12.5, fontWeight:800, color:"#2a2a38", marginBottom:6, padding:"7px 10px", borderRadius:12, background:"rgba(139,84,245,0.06)" },
   taskCount: { fontSize:11, fontWeight:800, color:"#8b54f5", background:"rgba(139,84,245,0.12)", borderRadius:8, padding:"1px 8px" },
+  taskFold: { fontSize:14, fontWeight:900, color:"#8b54f5", display:"inline-block", transition:"transform .2s", lineHeight:1 },
   taskRow: { display:"flex", alignItems:"center", gap:11, padding:"7px 0" },
   taskCheck: { width:20, height:20, borderRadius:7, border:"2px solid #c8c8d4", flexShrink:0, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:900, color:"transparent", lineHeight:1 },
   taskCheckOn: { background:"#8b54f5", border:"2px solid #8b54f5", color:"#fff" },
