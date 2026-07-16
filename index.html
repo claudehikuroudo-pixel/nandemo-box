@@ -295,6 +295,8 @@ function App() {
   const [addRemind, setAddRemind] = useState("none");  // リマインド: none/morning/b10/b60/prev
   const [addAtts, setAddAtts] = useState([]);          // 作成中の予定に添付する関連 [{t,url|data|bid,name}]
   const [attachMenuId, setAttachMenuId] = useState(null); // 既存予定に後から添付するときの対象id
+  const [urlEntry, setUrlEntry] = useState(null);      // URL添付のインライン入力中の対象 {mode,id} or null
+  const [urlText, setUrlText] = useState("");          // URL入力欄の値
   const notifiedRef = useRef(new Set()); // 通知済みidを記録（重複通知防止）
   const fileRef = useRef(null);
   const cameraRef = useRef(null); // 直行カメラ用input
@@ -677,11 +679,16 @@ ${JSON.stringify(list)}
     attCtxRef.current = ctx;
     if (kind === "img") { if (attImgRef.current) { attImgRef.current.value = ""; attImgRef.current.click(); } }
     else if (kind === "pdf") { if (attPdfRef.current) { attPdfRef.current.value = ""; attPdfRef.current.click(); } }
-    else if (kind === "url") {
-      const u = window.prompt("URLを貼り付け（この予定に紐づけます）");
-      if (u && u.trim()) { let v = u.trim(); if (!/^https?:\/\//i.test(v)) v = "https://" + v; routeAttach({ t: "url", url: v }); }
-      setAttachMenuId(null);
-    }
+    else if (kind === "url") { setUrlText(""); setUrlEntry(ctx); }  // インライン入力を開く
+  }
+  function submitUrl() {
+    const v = urlText.trim();
+    if (!v) { setUrlEntry(null); return; }
+    const url = /^https?:\/\//i.test(v) ? v : "https://" + v;
+    attCtxRef.current = urlEntry;
+    routeAttach({ t: "url", url });
+    setUrlText(""); const wasExisting = urlEntry && urlEntry.mode === "existing"; setUrlEntry(null);
+    if (wasExisting) setAttachMenuId(null);
   }
   function onAttImg(e) {
     const f = e.target.files && e.target.files[0]; if (!f) return;
@@ -799,6 +806,7 @@ ${JSON.stringify(list)}
             <div style={S.gear} onClick={openSettings} title="設定">⚙</div>
           </div>
         </div>
+        <div style={S.tagline}>気になる一瞬を、ぽいぽい。あとは、蔵が勝手に。</div>
 
         {!apiKey && (
           <div style={S.keyBanner} onClick={openSettings}>
@@ -1017,7 +1025,14 @@ ${JSON.stringify(list)}
         </div>
 
         <div style={S.wall}>
-          {visible.map((it)=>{
+          {visible.length===0 ? (
+            <div style={S.wallEmpty}>
+              <div style={S.wallEmptyEmoji}>🗝️</div>
+              <div style={S.wallEmptyTitle}>気になったもの、ここに貯まっていく</div>
+              <div style={S.wallEmptyText}>スクショ・URL・写真、なんでも放り込むだけ。あとはAIが仕分けて、いい時に戻します。</div>
+              <div style={S.wallEmptyBtn} onClick={()=>setSheet(true)}>＋ 放り込んでみる</div>
+            </div>
+          ) : visible.map((it)=>{
             const c = CATS[it.category];
             const heroImg = it._img || it.image;
             return (
@@ -1141,6 +1156,14 @@ ${JSON.stringify(list)}
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("url",{mode:"new"})}>🔗 URL</div>
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("pdf",{mode:"new"})}>📄 PDF</div>
               </div>
+              {urlEntry && urlEntry.mode==="new" && (
+                <div style={S.urlRow}>
+                  <input style={S.urlInput} placeholder="https://… を貼り付け" value={urlText} autoFocus
+                    onChange={e=>setUrlText(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") submitUrl(); }} />
+                  <span style={S.urlOk} onClick={submitUrl}>✓</span>
+                  <span style={S.urlCancel} onClick={()=>setUrlEntry(null)}>✕</span>
+                </div>
+              )}
               {addAtts.length > 0 && (
                 <div style={S.attList}>
                   {addAtts.map((a,i)=>(
@@ -1173,8 +1196,16 @@ ${JSON.stringify(list)}
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("url",{mode:"existing",id:attachMenuId})}>🔗 URL</div>
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("pdf",{mode:"existing",id:attachMenuId})}>📄 PDF</div>
               </div>
+              {urlEntry && urlEntry.mode==="existing" && (
+                <div style={S.urlRow}>
+                  <input style={S.urlInput} placeholder="https://… を貼り付け" value={urlText} autoFocus
+                    onChange={e=>setUrlText(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") submitUrl(); }} />
+                  <span style={S.urlOk} onClick={submitUrl}>✓</span>
+                  <span style={S.urlCancel} onClick={()=>setUrlEntry(null)}>✕</span>
+                </div>
+              )}
               <div style={S.sheetBtns}>
-                <button style={S.btnGhost} onClick={()=>setAttachMenuId(null)}>閉じる</button>
+                <button style={S.btnGhost} onClick={()=>{setUrlEntry(null); setAttachMenuId(null);}}>閉じる</button>
               </div>
             </div>
           </div>
@@ -1525,6 +1556,12 @@ const S = {
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
   tabDot: { width:7, height:7, borderRadius:"50%", flexShrink:0 }, tabLbl:{ fontSize:12, fontWeight:600, color:"#6a6a7a" },
   wall: { padding:"2px 18px 150px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, alignItems:"stretch" },
+  tagline: { padding:"0 24px 4px", fontSize:12, fontWeight:700, color:"#a89ad0", letterSpacing:"0.01em" },
+  wallEmpty: { gridColumn:"1 / -1", textAlign:"center", padding:"34px 24px 40px", display:"flex", flexDirection:"column", alignItems:"center", gap:8 },
+  wallEmptyEmoji: { fontSize:38, opacity:0.9 },
+  wallEmptyTitle: { fontSize:15, fontWeight:900, color:"#2a2440" },
+  wallEmptyText: { fontSize:12.5, fontWeight:600, color:"#9a9aaa", lineHeight:1.7, maxWidth:300 },
+  wallEmptyBtn: { marginTop:8, padding:"12px 22px", borderRadius:16, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:14, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(120,110,220,0.35)" },
   card: { borderRadius:22, minHeight:184, background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
   cardMenuBtn: { position:"absolute", top:8, right:8, zIndex:5, width:28, height:28, borderRadius:14, background:"rgba(0,0,0,0.3)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:700, cursor:"pointer", lineHeight:1, backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)" },
   menuClose: { position:"absolute", top:6, right:9, fontSize:13, fontWeight:700, color:"#aaa", cursor:"pointer", padding:4, lineHeight:1 },
@@ -1628,6 +1665,10 @@ const S = {
   rChip: { fontSize:11.5, fontWeight:700, padding:"7px 12px", borderRadius:20, border:"1px solid #e8e8ee", background:"#fff", color:"#7a7a8a", cursor:"pointer", userSelect:"none" },
   rChipOn: { background:"#eef2ff", borderColor:"#c3cffc", color:"#4a63d8" },
   attAddBtn: { fontSize:12, fontWeight:700, padding:"8px 13px", borderRadius:12, border:"1.5px dashed #d8d8e2", background:"#fafafb", color:"#666", cursor:"pointer", userSelect:"none" },
+  urlRow: { display:"flex", alignItems:"center", gap:8, marginBottom:12 },
+  urlInput: { flex:1, height:42, borderRadius:12, border:"1px solid #c3cffc", background:"#fff", padding:"0 12px", fontSize:13, color:"#1a1a24", outline:"none", boxSizing:"border-box" },
+  urlOk: { width:38, height:38, flexShrink:0, borderRadius:11, background:"#4a63d8", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:800, cursor:"pointer" },
+  urlCancel: { width:34, height:38, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, color:"#b0b0bc", fontWeight:700, cursor:"pointer" },
   attList: { display:"flex", flexWrap:"wrap", gap:8, marginBottom:12 },
   attChip: { display:"flex", alignItems:"center", gap:6, background:"#fff", border:"1px solid #e8e8ee", borderRadius:10, padding:"5px 8px", maxWidth:"100%" },
   attThumb: { width:26, height:26, borderRadius:6, objectFit:"cover", flexShrink:0 },
