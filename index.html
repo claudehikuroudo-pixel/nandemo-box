@@ -1018,7 +1018,7 @@ ${JSON.stringify(list)}
         {/* 箱に聞く（AIに聞ける＝生活版NotebookLMの核） */}
         <div style={S.askBar} onClick={()=>{setAskOpen(true); setAskAnswer("");}}>
           <span style={S.askBarIcon}>🔮</span>
-          <span style={S.askBarText}>箱に聞く（例：この前のレシピ何だっけ？）</span>
+          <span style={S.askBarText}>蔵から引き出す（例：この前のレシピ何だっけ？）</span>
         </div>
 
         <div style={S.boxHeadRow}>
@@ -1234,7 +1234,7 @@ ${JSON.stringify(list)}
           <div style={S.sheetWrap} onClick={()=>!askBusy && setAskOpen(false)}>
             <div style={S.sheet} onClick={e=>e.stopPropagation()}>
               <div style={S.sheetGrip}/>
-              <div style={S.sheetTitle}>🔮 箱に聞く</div>
+              <div style={S.sheetTitle}>🔮 蔵から引き出す</div>
               <div style={S.sheetSub}>貯めた中身に、AIが答えます。「あれ何だっけ」を会話で。</div>
               <textarea
                 style={S.textarea}
@@ -1576,23 +1576,23 @@ const S = {
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
   tabDot: { width:7, height:7, borderRadius:"50%", flexShrink:0 }, tabLbl:{ fontSize:12, fontWeight:600, color:"#6a6a7a" },
-  wall: { padding:"2px 18px 150px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, alignItems:"stretch" },
+  wall: { padding:"2px 18px 150px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, alignItems:"stretch" },
   tagline: { padding:"0 24px 4px", fontSize:12, fontWeight:700, color:"#a89ad0", letterSpacing:"0.01em" },
   wallEmpty: { gridColumn:"1 / -1", textAlign:"center", padding:"34px 24px 40px", display:"flex", flexDirection:"column", alignItems:"center", gap:8 },
   wallEmptyEmoji: { fontSize:38, opacity:0.9 },
   wallEmptyTitle: { fontSize:15, fontWeight:900, color:"#2a2440" },
   wallEmptyText: { fontSize:12.5, fontWeight:600, color:"#9a9aaa", lineHeight:1.7, maxWidth:300 },
   wallEmptyBtn: { marginTop:8, padding:"12px 22px", borderRadius:16, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:14, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(120,110,220,0.35)" },
-  card: { borderRadius:22, minHeight:184, display:"flex", background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
+  card: { borderRadius:18, minHeight:142, display:"flex", background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
   cardMenuBtn: { position:"absolute", top:8, right:8, zIndex:5, width:28, height:28, borderRadius:14, background:"rgba(0,0,0,0.3)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:700, cursor:"pointer", lineHeight:1, backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)" },
   menuClose: { position:"absolute", top:6, right:9, fontSize:13, fontWeight:700, color:"#aaa", cursor:"pointer", padding:4, lineHeight:1 },
-  hero: { height:84, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:13 },
+  hero: { height:62, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:10 },
   heroGlow: { position:"absolute", top:-30, right:-20, width:80, height:80, borderRadius:"50%", background:"radial-gradient(circle,rgba(255,255,255,0.5),transparent 70%)" },
   cardCat: { position:"absolute", top:10, left:10, fontSize:9.5, fontWeight:800, letterSpacing:"0.02em", color:"#fff", padding:"3px 9px", borderRadius:8, background:"rgba(0,0,0,0.18)", backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)", textShadow:"0 1px 3px rgba(0,0,0,0.45)" },
   // D型カード：左にカテゴリ色のアクセントバー＋本文は白地で読みやすく
   dBar: { width:7, flexShrink:0 },
   dCol: { flex:1, minWidth:0, display:"flex", flexDirection:"column" },
-  cardBody: { padding:"12px 14px 15px" },
+  cardBody: { padding:"9px 11px 11px" },
   // C型カード（画像主役）：写真が主役。写真が無い時はカテゴリ色を敷く
   cMedia: { position:"relative", flex:1, minHeight:184, overflow:"hidden", display:"flex", alignItems:"flex-end" },
   cScrim: { position:"relative", zIndex:2, width:"100%", padding:"28px 12px 12px", background:"linear-gradient(to top, rgba(8,8,22,0.85), rgba(8,8,22,0.45) 58%, transparent)" },
@@ -1602,10 +1602,10 @@ const S = {
   cChip: { fontSize:9.5, fontWeight:800, color:"#fff", background:"rgba(255,255,255,0.24)", padding:"3px 8px", borderRadius:8, backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)" },
   cAction: { fontSize:9.5, fontWeight:800, color:"#fff", background:"rgba(255,255,255,0.18)", padding:"3px 8px", borderRadius:8, textDecoration:"none", cursor:"pointer", backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)", whiteSpace:"nowrap" },
   cDate: { fontSize:9, fontWeight:700, color:"rgba(255,255,255,0.55)", marginLeft:"auto" },
-  cardTitle: { fontSize:13, fontWeight:700, color:"#1a1a24", lineHeight:1.45, marginBottom:5, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" },
-  cardMeta: { fontSize:10.5, color:"#9a9aaa" },
-  cardDate: { fontSize:9.5, color:"#b0b0be", fontWeight:600, marginTop:9 },
-  cardChip: { display:"inline-block", marginTop:9, padding:"5px 11px", borderRadius:100, fontSize:11, fontWeight:600 },
+  cardTitle: { fontSize:12, fontWeight:700, color:"#1a1a24", lineHeight:1.38, marginBottom:3, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" },
+  cardMeta: { fontSize:10, color:"#9a9aaa", display:"-webkit-box", WebkitLineClamp:1, WebkitBoxOrient:"vertical", overflow:"hidden" },
+  cardDate: { fontSize:9, color:"#b0b0be", fontWeight:600, marginTop:6 },
+  cardChip: { display:"inline-block", marginTop:6, padding:"4px 9px", borderRadius:100, fontSize:10, fontWeight:600 },
   menu: { position:"absolute", inset:0, zIndex:10, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:"10px 10px 10px", display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
   menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
   menuItem: { display:"flex", alignItems:"center", gap:8, padding:"9px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
@@ -1637,9 +1637,9 @@ const S = {
   photoX: { width:26, height:26, borderRadius:13, background:"#f2f2f6", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#999", cursor:"pointer", flexShrink:0 },
   previewImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
   cardHeroImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
-  cardLink: { display:"inline-flex", alignItems:"center", gap:3, marginTop:8, padding:"4px 9px", borderRadius:8, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:10.5, fontWeight:700, textDecoration:"none" },
-  cardImgBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, padding:"4px 9px", borderRadius:8, background:"rgba(100,100,150,0.1)", color:"#6a6a7a", fontSize:10.5, fontWeight:700, cursor:"pointer" },
-  cardMapBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:8, marginRight:6, padding:"6px 11px", borderRadius:8, background:"rgba(47,216,122,0.16)", color:"#1aa85c", fontSize:11, fontWeight:800, textDecoration:"none" },
+  cardLink: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, padding:"3px 8px", borderRadius:7, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:10, fontWeight:700, textDecoration:"none" },
+  cardImgBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:5, padding:"3px 8px", borderRadius:7, background:"rgba(100,100,150,0.1)", color:"#6a6a7a", fontSize:10, fontWeight:700, cursor:"pointer" },
+  cardMapBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, marginRight:5, padding:"4px 9px", borderRadius:7, background:"rgba(47,216,122,0.16)", color:"#1aa85c", fontSize:10, fontWeight:800, textDecoration:"none" },
   lbWrap: { position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center" },
   lbImg: { maxWidth:"92%", maxHeight:"80vh", borderRadius:16, objectFit:"contain" },
   lbClose: { position:"absolute", top:28, right:24, width:36, height:36, borderRadius:18, background:"rgba(255,255,255,0.18)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, cursor:"pointer", fontWeight:700 },
