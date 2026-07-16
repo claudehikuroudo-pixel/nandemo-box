@@ -9,3 +9,11 @@ Thumbs.db
 # 一時ファイル
 *.tmp
 *.log
+
+# デモ動画パイプライン（動画・音源・中間物はコミットしない）
+demo-video/incoming/
+demo-video/output/
+demo-video/bgm/
+demo-video/_tmp/
+demo-video/_dbg.ps1
+demo-video/_probe.ps1
