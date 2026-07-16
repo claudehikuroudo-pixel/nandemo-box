@@ -1007,7 +1007,7 @@ ${JSON.stringify(list)}
           </div>
         </div>
         <div style={S.tabs}>
-          {[["all","すべて","#16161e"],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["news","ニュース",CATS.news.dot],["kyomi","興味ある",CATS.kyomi.dot],["event","予定",CATS.event.dot]].map(([c,l,col])=>(
+          {[["all","すべて","#16161e"],["event","予定",CATS.event.dot],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["news","ニュース",CATS.news.dot],["kyomi","興味ある",CATS.kyomi.dot]].map(([c,l,col])=>(
             <div key={c} onClick={()=>setFilter(c)}
               style={{...S.tab, ...(filter===c?{...S.tabOn, background: c==="all"?"linear-gradient(120deg,#16161e,#3a3a4e)":CATS[c]?CATS[c].grad:"#16161e"}:{})}}>
               <span style={{...S.tabDot, background: filter===c?"#fff":col}}/>
