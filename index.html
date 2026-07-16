@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="theme-color" content="#f6f6f8" />
-<title>いつ蔵</title>
+<title>デテコイ</title>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; padding: 0; }
@@ -350,11 +350,11 @@ function App() {
         if (it.remindAt) {                                         // プリセット式
           if (it.remindAt.slice(0, 10) === todayStr && nowStr >= it.remindAt) {
             notifiedRef.current.add(it.id);
-            try { new Notification("いつ蔵 ⏰", { body: `${it.time || ""} ${it.title}`.trim() }); } catch(e){}
+            try { new Notification("デテコイ ⏰", { body: `${it.time || ""} ${it.title}`.trim() }); } catch(e){}
           }
         } else if (it.remind && it.date === todayStr && it.time && it.time <= hm) { // 旧データ互換
           notifiedRef.current.add(it.id);
-          try { new Notification("いつ蔵 ⏰", { body: `${it.time} ${it.title}` }); } catch(e){}
+          try { new Notification("デテコイ ⏰", { body: `${it.time} ${it.title}` }); } catch(e){}
         }
       });
     };
@@ -505,7 +505,7 @@ function App() {
 放り込まれた内容:\n"""${contextText}"""`
         : `放り込まれたテキスト:\n"""${contextText}"""`;
 
-      const prompt = `あなたは「いつ蔵」（気になったものを何でも放り込める箱）アプリの仕分けエンジンです。
+      const prompt = `あなたは「デテコイ」（気になったものを何でも放り込み、必要な時に呼び出せる箱）アプリの仕分けエンジンです。
 ユーザーが放り込んだ内容を読み、5カテゴリのどれかに分類してJSONだけ返してください。
 
 カテゴリ定義:
@@ -596,7 +596,7 @@ ${imgInstruction}
         date: it.date || undefined,
         added: it.added || undefined,
       }));
-      const prompt = `あなたはユーザー個人の「いつ蔵」（気になったものを放り込む箱）に詳しいアシスタントです。
+      const prompt = `あなたはユーザー個人の「デテコイ」（気になったものを放り込む箱）に詳しいアシスタントです。
 以下はユーザーが箱に貯めた項目一覧（JSON）です。ユーザーの質問に、この一覧だけを根拠に日本語で簡潔に答えてください。
 - 該当する項目があれば、そのタイトルを挙げて答える（複数あれば箇条書き）。
 - 見当たらなければanswerで「箱の中には見当たりませんでした」と正直に言い、idsは空配列。
@@ -802,13 +802,13 @@ ${JSON.stringify(list)}
       <div style={S.phone}>
 
         <div style={S.hd}>
-          <div style={S.hdName}>いつ<span style={S.accent}>蔵</span></div>
+          <div style={S.hdName}>デテ<span style={S.accent}>コイ</span></div>
           <div style={{display:"flex", alignItems:"center", gap:12}}>
             <div style={S.hdMonth}>{(()=>{const d=new Date(calBase);d.setDate(d.getDate()+calPageIdx*14);return <>{d.getMonth()+1}月 <span style={{ color: "#a0a0b0", fontSize: 12 }}>{d.getFullYear()}</span></>;})()}</div>
             <div style={S.gear} onClick={openSettings} title="設定">⚙</div>
           </div>
         </div>
-        <div style={S.tagline}>気になる一瞬を、ぽいぽい。あとは、蔵が勝手に。</div>
+        <div style={S.tagline}>気になる一瞬を、ぽいぽい。必要なときは、デテコイ。</div>
 
         {!apiKey && (
           <div style={S.keyBanner} onClick={openSettings}>
@@ -1018,7 +1018,7 @@ ${JSON.stringify(list)}
         {/* 箱に聞く（AIに聞ける＝生活版NotebookLMの核） */}
         <div style={S.askBar} onClick={()=>{setAskOpen(true); setAskAnswer("");}}>
           <span style={S.askBarIcon}>🔮</span>
-          <span style={S.askBarText}>蔵から引き出す（例：この前のレシピ何だっけ？）</span>
+          <span style={S.askBarText}>デテコイ！（例：この前のレシピ何だっけ？）</span>
         </div>
 
         <div style={S.boxHeadRow}>
@@ -1234,7 +1234,7 @@ ${JSON.stringify(list)}
           <div style={S.sheetWrap} onClick={()=>!askBusy && setAskOpen(false)}>
             <div style={S.sheet} onClick={e=>e.stopPropagation()}>
               <div style={S.sheetGrip}/>
-              <div style={S.sheetTitle}>🔮 蔵から引き出す</div>
+              <div style={S.sheetTitle}>🔮 デテコイ！</div>
               <div style={S.sheetSub}>貯めた中身に、AIが答えます。「あれ何だっけ」を会話で。</div>
               <textarea
                 style={S.textarea}
