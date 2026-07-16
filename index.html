@@ -115,12 +115,12 @@ const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 const CATS = {
   event: { label: "予定", en: "Event", grad: "linear-gradient(145deg,#ff6b9d,#ff8f6b)", chip: "rgba(255,94,138,0.13)", chipC: "#f0436c", dot: "#ff5e8a" },
   task:  { label: "タスク", en: "Task", grad: "linear-gradient(145deg,#a06bff,#6b8bff)", chip: "rgba(155,107,255,0.13)", chipC: "#8b54f5", dot: "#9b6bff" },
-  mono:  { label: "モノ", en: "Want", grad: "linear-gradient(145deg,#ffc247,#ff9a3d)", chip: "rgba(255,182,39,0.16)", chipC: "#d18908", dot: "#ffb627" },
+  mono:  { label: "欲しいもの", en: "Want", grad: "linear-gradient(145deg,#ffc247,#ff9a3d)", chip: "rgba(255,182,39,0.16)", chipC: "#d18908", dot: "#ffb627" },
   basho: { label: "行ってみたい", en: "Place", grad: "linear-gradient(145deg,#3fe08a,#1fc8b0)", chip: "rgba(47,216,122,0.14)", chipC: "#1aa85c", dot: "#2fd87a" },
   joho:  { label: "情報", en: "Info", grad: "linear-gradient(145deg,#47bfff,#6b9aff)", chip: "rgba(55,182,255,0.14)", chipC: "#1690d8", dot: "#37b6ff" },
   recipe:{ label: "レシピ", en: "Recipe", grad: "linear-gradient(145deg,#ff9068,#ff5e62)", chip: "rgba(255,94,98,0.14)", chipC: "#e0483f", dot: "#ff6b5c" },
   news:  { label: "ニュース", en: "News", grad: "linear-gradient(145deg,#64748b,#475569)", chip: "rgba(100,116,139,0.15)", chipC: "#475569", dot: "#64748b" },
-  kyomi: { label: "興味ある", en: "Interest", grad: "linear-gradient(145deg,#e879f9,#c026d3)", chip: "rgba(217,70,239,0.13)", chipC: "#c026d3", dot: "#d946ef" },
+  kyomi: { label: "興味・関心", en: "Interest", grad: "linear-gradient(145deg,#e879f9,#c026d3)", chip: "rgba(217,70,239,0.13)", chipC: "#c026d3", dot: "#d946ef" },
 };
 
 // ── 初期サンプル（初回だけ表示。一度使い始めると保存内容に置き換わる）──
@@ -1007,7 +1007,7 @@ ${JSON.stringify(list)}
           </div>
         </div>
         <div style={S.tabs}>
-          {[["all","すべて","#16161e"],["event","予定",CATS.event.dot],["task","タスク",CATS.task.dot],["mono","モノ",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["news","ニュース",CATS.news.dot],["kyomi","興味ある",CATS.kyomi.dot]].map(([c,l,col])=>(
+          {[["all","すべて","#16161e"],["event","予定",CATS.event.dot],["task","タスク",CATS.task.dot],["mono","欲しいもの",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["news","ニュース",CATS.news.dot],["kyomi","興味・関心",CATS.kyomi.dot]].map(([c,l,col])=>(
             <div key={c} onClick={()=>setFilter(c)}
               style={{...S.tab, ...(filter===c?{...S.tabOn, background: c==="all"?"linear-gradient(120deg,#16161e,#3a3a4e)":CATS[c]?CATS[c].grad:"#16161e"}:{})}}>
               <span style={{...S.tabDot, background: filter===c?"#fff":col}}/>
