@@ -7,6 +7,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="theme-color" content="#f6f6f8" />
 <title>デテコイ</title>
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; padding: 0; }
@@ -802,7 +805,10 @@ ${JSON.stringify(list)}
       <div style={S.phone}>
 
         <div style={S.hd}>
-          <div style={S.hdName}>デテ<span style={S.accent}>コイ</span></div>
+          <div style={{display:"flex", alignItems:"center", gap:9}}>
+            <img src="icon-192.png" alt="" style={S.hdLogo} onError={e=>{e.target.style.display='none';}} />
+            <div style={S.hdName}>デテ<span style={S.accent}>コイ</span></div>
+          </div>
           <div style={{display:"flex", alignItems:"center", gap:12}}>
             <div style={S.hdMonth}>{(()=>{const d=new Date(calBase);d.setDate(d.getDate()+calPageIdx*14);return <>{d.getMonth()+1}月 <span style={{ color: "#a0a0b0", fontSize: 12 }}>{d.getFullYear()}</span></>;})()}</div>
             <div style={S.gear} onClick={openSettings} title="設定">⚙</div>
@@ -1494,6 +1500,7 @@ const S = {
   sbt: { fontSize:13, fontWeight:700, color:"#1a1a2e" }, sbi:{ fontSize:11, color:"#1a1a2e", letterSpacing:1 },
   hd: { padding:"6px 22px 12px", display:"flex", alignItems:"flex-end", justifyContent:"space-between" },
   hdName: { fontSize:26, fontWeight:900, color:"#16161e", letterSpacing:"-0.04em" },
+  hdLogo: { width:34, height:34, borderRadius:9, boxShadow:"0 2px 8px rgba(120,90,220,0.3)", flexShrink:0 },
   accent: { background:"linear-gradient(120deg,#ff6b9d,#a06bff,#56c4ff)", WebkitBackgroundClip:"text", backgroundClip:"text", WebkitTextFillColor:"transparent" },
   hdMonth: { fontSize:14, fontWeight:700, color:"#16161e" },
   gear: { fontSize:18, cursor:"pointer", opacity:0.5, lineHeight:1 },
