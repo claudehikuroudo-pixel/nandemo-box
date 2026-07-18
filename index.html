@@ -309,41 +309,78 @@ async function geocodeNominatim(q){
   return null;
 }
 
-function BoxMap({ items, onPlan }) {
+// 地名検索クエリを「ヒットしやすい順」に組み立てる。タイトル1発だと固有店名や感想まじりの名前で
+// 空振りするので、meta欄の地名（例「渋谷・徒歩5分」→「渋谷」）と組み合わせた候補も投げる。
+function buildGeoQueries(it){
+  const cand = [];
+  const push = (s) => { s = (s||"").replace(/\s+/g," ").trim(); if (s && !cand.includes(s)) cand.push(s); };
+  const title = (it.title||"").trim();
+  const place = (it.place||"").trim();
+  // 感想・接頭を軽く落とす（「気になる角打ちバー」→「角打ちバー」）
+  const cleanTitle = title.replace(/^(気になる|話題の|噂の|例の|あの|行きたい|注目の)/,"").trim();
+  // meta から地名っぽいトークンだけ拾う（時間/距離/期間などのノイズは除外）
+  const metaTokens = (it.meta||"").split(/[・,/｜|\s]+/).map(s=>s.trim()).filter(s =>
+    s && !/^\d/.test(s) && !/(分|駅|徒歩|以内|期間|限定|オンライン|あとで|今週|今日|明日|km|ｍ|m)$/.test(s)
+  );
+  if (place) push(place);                                  // 会場・店名が明示されていれば最優先
+  metaTokens.forEach(t => push(`${t} ${cleanTitle}`));     // 「渋谷 角打ちバー」
+  push(cleanTitle);                                        // 「角打ちバー」
+  push(title);                                             // 素のタイトル
+  metaTokens.forEach(t => push(t));                        // 最後の砦＝地名だけ（「渋谷」）
+  return cand.slice(0, 4);                                 // 投げすぎない（レート制限＆礼儀）
+}
+
+function BoxMap({ items, onPlan, onFixLocation }) {
   const boxRef = useRef(null);    // 地図コンテナ
   const mapRef = useRef(null);    // Leaflet map本体
   const layerRef = useRef(null);  // マーカー層
   const [pts, setPts] = useState([]);      // 解決済み {it,lat,lng}
+  const [failed, setFailed] = useState([]);// 座標にできなかった「行ってみたい」＝消さずに出す
   const [loading, setLoading] = useState(false);
 
-  // ① 座標を解決：geo付き（撮った場所）は即・「行ってみたい」は地名をジオコーディング（キャッシュ）
+  // ① 座標を解決：手動ピン→撮った場所(geo)→「行ってみたい/会場つき予定」は地名を複数候補でジオコーディング。
+  //    取れなかったものは無言で捨てず failed に貯めて画面に出す（＝ユーザーが自分で直せる）。
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const cache = loadGeoCache();
+      const isHit = (v) => v && typeof v.lat === "number";
       const out = [];
-      const toGeocode = [];
+      const need = [];               // {it, queries}
       for (const it of (items || [])) {
-        if (it.geo && typeof it.geo.lat === "number" && typeof it.geo.lng === "number") {
-          out.push({ it, lat: it.geo.lat, lng: it.geo.lng });
+        if (it.mapPin && typeof it.mapPin.lat === "number") {          // 手動で置いたピン（最優先）
+          out.push({ it, lat: it.mapPin.lat, lng: it.mapPin.lng });
+        } else if (it.geo && typeof it.geo.lat === "number" && typeof it.geo.lng === "number") {
+          out.push({ it, lat: it.geo.lat, lng: it.geo.lng });          // 撮った場所つき写真
         } else if (it.category === "basho" || (it.category === "event" && it.place)) {
-          // 行ってみたい＝場所そのもの。予定＝会場/店名(place)があればピン化（"どこで"の空間軸）
-          const q = (it.place || it.title || "").trim();
-          if (!q) continue;
-          if (cache[q]) out.push({ it, lat: cache[q].lat, lng: cache[q].lng });
-          else toGeocode.push({ it, q });
+          const queries = buildGeoQueries(it);
+          if (!queries.length) continue;
+          const cachedHit = queries.map(q => cache[q]).find(isHit);    // どれか1つでもキャッシュ済みなら使う
+          if (cachedHit) out.push({ it, lat: cachedHit.lat, lng: cachedHit.lng });
+          else need.push({ it, queries });
         }
       }
-      if (!cancelled) setPts(out.slice());
-      if (toGeocode.length) {
+      if (!cancelled) { setPts(out.slice()); setFailed([]); }
+      if (need.length) {
         setLoading(true);
-        for (const g of toGeocode) {
+        const fails = [];
+        for (const g of need) {
           if (cancelled) break;
-          try {
-            const c = await geocodeNominatim(g.q);
-            if (c) { cache[g.q] = c; out.push({ it: g.it, lat: c.lat, lng: c.lng }); if (!cancelled) setPts(out.slice()); }
-          } catch (e) { /* 取れなくてもスキップ */ }
-          await new Promise(r => setTimeout(r, 1100)); // Nominatimレート制限（1req/s）遵守
+          let found = null;
+          for (const q of g.queries) {
+            if (cancelled) break;
+            const cached = cache[q];
+            if (isHit(cached)) { found = cached; break; }               // 既知ヒット
+            if (cached && cached.miss) continue;                        // 既知の空振り→次の候補へ
+            try {
+              const c = await geocodeNominatim(q);
+              await new Promise(r => setTimeout(r, 1100));               // Nominatim 1req/s 遵守
+              if (c) { cache[q] = c; found = c; break; }
+              cache[q] = { miss: true };                                // 空振りも記録＝同じ検索を繰り返さない
+            } catch (e) { /* この候補は諦めて次へ */ }
+          }
+          if (isHit(found)) { out.push({ it: g.it, lat: found.lat, lng: found.lng }); if (!cancelled) setPts(out.slice()); }
+          else { fails.push(g.it); if (!cancelled) setFailed(fails.slice()); }
         }
         saveGeoCache(cache);
         if (!cancelled) setLoading(false);
@@ -351,6 +388,24 @@ function BoxMap({ items, onPlan }) {
     })();
     return () => { cancelled = true; };
   }, [items]);
+
+  // 「出せなかった場所」を手動で解決：正しい地名を入れてもらい、取れたら mapPin として保存（＝itemsに乗る→永続化＆再描画）
+  async function fixLocation(it){
+    const q = window.prompt("正しい地名・住所を入れてください（例：渋谷 恵比寿横丁）", it.title || "");
+    if (!q || !q.trim()) return;
+    const query = q.trim();
+    try {
+      setLoading(true);
+      const c = await geocodeNominatim(query);
+      setLoading(false);
+      if (c && onFixLocation) {
+        const cache = loadGeoCache(); cache[query] = c; saveGeoCache(cache);
+        onFixLocation(it.id, c);   // items更新→再解決でピン化し、failedからも自動で消える
+      } else {
+        window.alert("その名前でも場所が見つかりませんでした。もう少し詳しい地名や住所でお試しください。");
+      }
+    } catch (e) { setLoading(false); window.alert("場所の検索に失敗しました。通信環境をご確認ください。"); }
+  }
 
   // ② 地図を一度だけ生成
   useEffect(() => {
@@ -400,11 +455,26 @@ function BoxMap({ items, onPlan }) {
     <div style={{ position: "relative", padding: "0 16px 150px" }}>
       <div ref={boxRef} style={S.mapBox} />
       {loading && <div style={S.mapLoading}>📍 場所を地図に配置中…</div>}
-      {pts.length === 0 && !loading && (
+      {pts.length === 0 && failed.length === 0 && !loading && (
         <div style={S.mapEmpty}>
           <div style={S.mapEmptyEmoji}>🗺️</div>
           <div style={S.mapEmptyTitle}>行きたい場所が、地図に貯まる</div>
           <div style={S.mapEmptyText}>「行ってみたい」お店やスポットを放り込むと、ここに常時ピンで表示されます。撮った場所つきの写真も出ます。</div>
+        </div>
+      )}
+      {failed.length > 0 && (
+        <div style={S.mapFailWrap}>
+          <div style={S.mapFailHead}>📍 地図に出せなかった場所（{failed.length}）</div>
+          <div style={S.mapFailNote}>名前だけだと場所を特定できないことがあります。地名を足すとピンが立ちます。</div>
+          {failed.map(it => (
+            <div key={it.id} style={S.mapFailRow}>
+              <div style={S.mapFailTitle}>{it.title}</div>
+              <div style={S.mapFailBtns}>
+                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(it.title||"")}`} target="_blank" rel="noopener noreferrer" style={S.mapFailLink}>Googleマップで探す</a>
+                <button style={S.mapFailFix} onClick={()=>fixLocation(it)}>地名を指定</button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1367,6 +1437,9 @@ ${JSON.stringify(list)}
           setAddType("event");
           setAddTitle(it.title);
           setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none");
+        }} onFixLocation={(id, coord)=>{
+          // 「地名を指定」で解決した座標を手動ピンとして保存（items更新→line492のeffectでIDBへ永続化）
+          setItems(prev => prev.map(it => it.id===id ? { ...it, mapPin: coord } : it));
         }} />}
 
         <input ref={attImgRef} type="file" accept="image/*" style={{display:"none"}} onChange={onAttImg} />
@@ -1866,6 +1939,14 @@ const S = {
   mapEmptyEmoji: { fontSize:40, marginBottom:10 },
   mapEmptyTitle: { fontSize:15, fontWeight:800, color:"#2a2a34", marginBottom:6 },
   mapEmptyText: { fontSize:12.5, color:"#8a8a96", lineHeight:1.7 },
+  mapFailWrap: { marginTop:12, background:"rgba(255,246,238,0.92)", border:"1px solid rgba(240,150,90,0.28)", borderRadius:14, padding:"12px 14px" },
+  mapFailHead: { fontSize:13, fontWeight:800, color:"#b5581f" },
+  mapFailNote: { fontSize:11.5, color:"#a07a63", marginTop:3, marginBottom:6, lineHeight:1.6 },
+  mapFailRow: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"8px 0", borderTop:"1px solid rgba(240,150,90,0.16)" },
+  mapFailTitle: { fontSize:13, fontWeight:700, color:"#3a3a44", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  mapFailBtns: { display:"flex", gap:8, flexShrink:0, alignItems:"center" },
+  mapFailLink: { fontSize:12, color:"#2b6cb0", textDecoration:"none", whiteSpace:"nowrap" },
+  mapFailFix: { fontSize:12, fontWeight:700, border:"none", background:"#16161e", color:"#fff", borderRadius:8, padding:"6px 11px", cursor:"pointer", whiteSpace:"nowrap" },
   tabs: { display:"flex", gap:6, padding:"0 20px 12px", overflowX:"auto" },
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
