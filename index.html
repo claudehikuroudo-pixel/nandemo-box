@@ -95,12 +95,14 @@
     50%      { box-shadow: 0 0 0 8px rgba(80,200,255,0); }
   }
 </style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
 </head>
 <body>
 <div id="root"></div>
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script>
   // ブラウザ単体で動かすため、JSX変換を classic runtime（React.createElement）に固定。
@@ -165,6 +167,23 @@ function compressImage(dataUrl) {
   });
 }
 
+// 添付の見た目と扱い。t:"pdf"は旧データ、t:"file"が新（どんな形式でもIDBにblobで持つ）
+const FILE_ICONS = [
+  [/\.(xlsx?|xlsm|csv)$/i, "📊"], [/\.(docx?|rtf)$/i, "📝"], [/\.pptx?$/i, "📽"],
+  [/\.pdf$/i, "📄"], [/\.(zip|rar|7z)$/i, "🗜"], [/\.(mp3|m4a|wav)$/i, "🎵"], [/\.(mp4|mov)$/i, "🎬"],
+];
+function fileIcon(name) {
+  for (const [re, ic] of FILE_ICONS) if (re.test(name || "")) return ic;
+  return "📎";
+}
+function attIconOf(a) { return a.t === "url" ? "🔗" : a.t === "pdf" ? "📄" : fileIcon(a.name); }
+function attLabelOf(a) {
+  return a.t === "url" ? a.url.replace(/^https?:\/\//, "") : (a.name || "写真");
+}
+const isBlobAtt = a => (a.t === "pdf" || a.t === "file") && a.bid;
+// ブラウザで直接見られる形式だけ新タブ。Word/Excel等は端末のアプリに渡す（＝download）
+const isViewable = a => a.t === "pdf" || /\.(pdf|png|jpe?g|gif|webp|txt|md)$/i.test(a.name || "");
+
 function loadItems() {
   try {
     const raw = localStorage.getItem(LS_ITEMS);
@@ -211,7 +230,7 @@ function idbSetItems(items) {
     tx.onerror = () => reject(tx.error);
   }));
 }
-// 添付ファイル(主にPDF)は本体itemsに詰めず別キーでblob保存（＝items JSONを軽く保ち"消えない"を守る）
+// 添付ファイルは本体itemsに詰めず別キーでblob保存（＝items JSONを軽く保ち"消えない"を守る）
 function idbPutAtt(key, blob) {
   return idbOpen().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, "readwrite");
@@ -259,9 +278,143 @@ function ScanFX({ loop }) {
   );
 }
 
+// ── 地図（自分だけの地図）。Leaflet＋OpenStreetMap＝APIキー/課金不要・完全無料。 ──
+// Leafletの既定マーカー画像パスをCDNへ明示（自動検出が外れてピンが消えるのを防ぐ）。
+if (window.L && window.L.Icon) {
+  delete window.L.Icon.Default.prototype._getIconUrl;
+  window.L.Icon.Default.mergeOptions({
+    iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+    iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+    shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  });
+}
+const GEO_CACHE_KEY = "nb_geocache_v1";
+function loadGeoCache(){ try { return JSON.parse(localStorage.getItem(GEO_CACHE_KEY) || "{}"); } catch(e){ return {}; } }
+function saveGeoCache(c){ try { localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(c)); } catch(e){} }
+function escHtml(s){ return String(s||"").replace(/[&<>"]/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
+// カテゴリ色のティアドロップ型ピン（予定=ピンク／行ってみたい=緑…でひと目で分かる）
+function pinIcon(color){
+  return window.L.divIcon({
+    className: "nb-pin",
+    html: `<div style="width:20px;height:20px;border-radius:50% 50% 50% 0;background:${color};transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>`,
+    iconSize: [20,20], iconAnchor: [10,20], popupAnchor: [0,-18]
+  });
+}
+// 地名→座標（OSM Nominatim・無料）。利用規約に沿って呼び出しは1件ずつ間隔を空ける（呼び出し側で制御）。
+async function geocodeNominatim(q){
+  const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ja&q=${encodeURIComponent(q)}`, { headers: { "Accept": "application/json" } });
+  if (!r.ok) throw new Error("geocode failed");
+  const arr = await r.json();
+  if (Array.isArray(arr) && arr.length) return { lat: parseFloat(arr[0].lat), lng: parseFloat(arr[0].lon) };
+  return null;
+}
+
+function BoxMap({ items, onPlan }) {
+  const boxRef = useRef(null);    // 地図コンテナ
+  const mapRef = useRef(null);    // Leaflet map本体
+  const layerRef = useRef(null);  // マーカー層
+  const [pts, setPts] = useState([]);      // 解決済み {it,lat,lng}
+  const [loading, setLoading] = useState(false);
+
+  // ① 座標を解決：geo付き（撮った場所）は即・「行ってみたい」は地名をジオコーディング（キャッシュ）
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const cache = loadGeoCache();
+      const out = [];
+      const toGeocode = [];
+      for (const it of (items || [])) {
+        if (it.geo && typeof it.geo.lat === "number" && typeof it.geo.lng === "number") {
+          out.push({ it, lat: it.geo.lat, lng: it.geo.lng });
+        } else if (it.category === "basho" || (it.category === "event" && it.place)) {
+          // 行ってみたい＝場所そのもの。予定＝会場/店名(place)があればピン化（"どこで"の空間軸）
+          const q = (it.place || it.title || "").trim();
+          if (!q) continue;
+          if (cache[q]) out.push({ it, lat: cache[q].lat, lng: cache[q].lng });
+          else toGeocode.push({ it, q });
+        }
+      }
+      if (!cancelled) setPts(out.slice());
+      if (toGeocode.length) {
+        setLoading(true);
+        for (const g of toGeocode) {
+          if (cancelled) break;
+          try {
+            const c = await geocodeNominatim(g.q);
+            if (c) { cache[g.q] = c; out.push({ it: g.it, lat: c.lat, lng: c.lng }); if (!cancelled) setPts(out.slice()); }
+          } catch (e) { /* 取れなくてもスキップ */ }
+          await new Promise(r => setTimeout(r, 1100)); // Nominatimレート制限（1req/s）遵守
+        }
+        saveGeoCache(cache);
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [items]);
+
+  // ② 地図を一度だけ生成
+  useEffect(() => {
+    if (!boxRef.current || mapRef.current || !window.L) return;
+    const map = window.L.map(boxRef.current, { zoomControl: true });
+    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    map.setView([35.681, 139.767], 11); // 既定＝東京
+    layerRef.current = window.L.layerGroup().addTo(map);
+    mapRef.current = map;
+    setTimeout(() => map.invalidateSize(), 120);
+    return () => { map.remove(); mapRef.current = null; layerRef.current = null; };
+  }, []);
+
+  // ③ pts変化でマーカー再描画＋範囲フィット
+  useEffect(() => {
+    const map = mapRef.current, layer = layerRef.current;
+    if (!map || !layer || !window.L) return;
+    layer.clearLayers();
+    if (!pts.length) return;
+    const bounds = [];
+    for (const p of pts) {
+      const c = CATS[p.it.category] || {};
+      const color = c.dot || "#2fd87a";
+      const gmap = `https://www.google.com/maps?q=${p.lat},${p.lng}`;
+      const el = document.createElement("div");
+      el.style.minWidth = "150px";
+      el.innerHTML =
+        `<b style="font-size:13px">${escHtml(p.it.title)}</b>` +
+        `<div style="color:#8a8a96;font-size:11px;margin-top:2px">${escHtml(c.label||"")}${p.it.place ? " ・ 📍"+escHtml(p.it.place) : ""}</div>` +
+        `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">` +
+          `<a href="${gmap}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#2b6cb0;text-decoration:none">Googleマップで開く</a>` +
+          (p.it.category !== "event" ? `<button class="nb-plan" style="font-size:12px;font-weight:700;border:none;background:#16161e;color:#fff;border-radius:8px;padding:5px 10px;cursor:pointer">📅 予定に入れる</button>` : "") +
+        `</div>`;
+      const btn = el.querySelector(".nb-plan");
+      if (btn && onPlan) btn.addEventListener("click", () => { onPlan(p.it); map.closePopup(); });
+      window.L.marker([p.lat, p.lng], { icon: pinIcon(color) }).bindPopup(el).addTo(layer);
+      bounds.push([p.lat, p.lng]);
+    }
+    if (bounds.length === 1) map.setView(bounds[0], 14);
+    else map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    setTimeout(() => map.invalidateSize(), 60);
+  }, [pts]);
+
+  return (
+    <div style={{ position: "relative", padding: "0 16px 150px" }}>
+      <div ref={boxRef} style={S.mapBox} />
+      {loading && <div style={S.mapLoading}>📍 場所を地図に配置中…</div>}
+      {pts.length === 0 && !loading && (
+        <div style={S.mapEmpty}>
+          <div style={S.mapEmptyEmoji}>🗺️</div>
+          <div style={S.mapEmptyTitle}>行きたい場所が、地図に貯まる</div>
+          <div style={S.mapEmptyText}>「行ってみたい」お店やスポットを放り込むと、ここに常時ピンで表示されます。撮った場所つきの写真も出ます。</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [items, setItems] = useState(null); // null = IndexedDB読込中
   const [filter, setFilter] = useState("all");
+  const [view, setView] = useState("cards"); // 下部の表示切替：cards=カード置き場 / category=分類別 / album=写真アルバム / map=自分だけの地図
   const [sort, setSort] = useState("new");
   const [sheet, setSheet] = useState(false);
   const [input, setInput] = useState("");
@@ -306,7 +459,7 @@ function App() {
   const fileRef = useRef(null);
   const cameraRef = useRef(null); // 直行カメラ用input
   const attImgRef = useRef(null); // 予定への写真添付
-  const attPdfRef = useRef(null); // 予定へのPDF添付
+  const attFileRef = useRef(null); // 予定へのファイル添付（PDF/Word/Excel/何でも）
   const attCtxRef = useRef(null); // 添付先: {mode:'new'} または {mode:'existing', id}
   const pendingGeoRef = useRef(null); // 撮影時の位置情報 {lat,lng,place} を次のconfirmAddで付与
   const loadedRef = useRef(false);
@@ -670,7 +823,7 @@ ${JSON.stringify(list)}
     setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event"); setAddAtts([]);
   }
 
-  // ── 予定への添付（写真/URL/PDF）。作成中(mode:new)＝addAtts、既存(mode:existing,id)＝item.attachments ──
+  // ── 予定への添付（写真/URL/ファイル）。作成中(mode:new)＝addAtts、既存(mode:existing,id)＝item.attachments ──
   function routeAttach(att) {
     const ctx = attCtxRef.current;
     if (!ctx) return;
@@ -683,7 +836,7 @@ ${JSON.stringify(list)}
   function triggerAttach(kind, ctx) {
     attCtxRef.current = ctx;
     if (kind === "img") { if (attImgRef.current) { attImgRef.current.value = ""; attImgRef.current.click(); } }
-    else if (kind === "pdf") { if (attPdfRef.current) { attPdfRef.current.value = ""; attPdfRef.current.click(); } }
+    else if (kind === "file") { if (attFileRef.current) { attFileRef.current.value = ""; attFileRef.current.click(); } }
     else if (kind === "url") { setUrlText(""); setUrlEntry(ctx); }  // インライン入力を開く
   }
   function submitUrl() {
@@ -701,29 +854,46 @@ ${JSON.stringify(list)}
     r.onload = () => { routeAttach({ t: "img", data: r.result, name: f.name }); setAttachMenuId(null); };
     r.readAsDataURL(f);
   }
-  async function onAttPdf(e) {
+  async function onAttFile(e) {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const key = `att:${nextId.current++}`;
-    try { await idbPutAtt(key, f); routeAttach({ t: "pdf", bid: key, name: f.name }); } catch (err) { alert("PDFの保存に失敗しました"); }
+    try { await idbPutAtt(key, f); routeAttach({ t: "file", bid: key, name: f.name }); }
+    catch (err) { alert("ファイルの保存に失敗しました"); }
     setAttachMenuId(null);
   }
   function removeNewAtt(idx) {
-    setAddAtts(prev => { const a = prev[idx]; if (a && a.t === "pdf" && a.bid) idbDelAtt(a.bid); return prev.filter((_, i) => i !== idx); });
+    setAddAtts(prev => { const a = prev[idx]; if (a && isBlobAtt(a)) idbDelAtt(a.bid); return prev.filter((_, i) => i !== idx); });
   }
   function removeItemAtt(id, idx) {
     setItems(prev => prev.map(it => {
       if (it.id !== id) return it;
-      const a = (it.attachments || [])[idx]; if (a && a.t === "pdf" && a.bid) idbDelAtt(a.bid);
+      const a = (it.attachments || [])[idx]; if (a && isBlobAtt(a)) idbDelAtt(a.bid);
       return { ...it, attachments: (it.attachments || []).filter((_, i) => i !== idx) };
     }));
   }
   async function openAtt(att) {
-    if (att.t === "url") { window.open(att.url, "_blank", "noopener"); }
-    else if (att.t === "img") { setLightbox(att.data); }
-    else if (att.t === "pdf") {
-      try { const blob = await idbGetAtt(att.bid); if (blob) window.open(URL.createObjectURL(blob), "_blank", "noopener"); }
-      catch (e) { alert("PDFを開けませんでした"); }
-    }
+    if (att.t === "url") { window.open(att.url, "_blank", "noopener"); return; }
+    if (att.t === "img") { setLightbox(att.data); return; }
+    try {
+      const blob = await idbGetAtt(att.bid);
+      if (!blob) { alert("ファイルが見つかりませんでした"); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      if (isViewable(att)) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
+      else { a.download = att.name || "file"; } // Word/Excel等はブラウザが表示できない＝ファイル名を保って端末のアプリへ
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { alert("ファイルを開けませんでした"); }
+  }
+  // 放り込んだ元ファイルは item 自身が持っている（_img / sourceUrl）。
+  // attachmentsに複製すると同じ画像を二重に持つので、カレンダー行では派生チップとして見せるだけにする。
+  function sourceAtts(it) {
+    const out = [];
+    const img = it._img || it.image;
+    if (img) out.push({ t: "img", data: img, name: "元の写真" });
+    if (it.sourceUrl && !it.searchLabel) out.push({ t: "url", url: it.sourceUrl }); // searchLabel付き＝自動生成のGoogle検索なので出さない
+    return out;
   }
   function confirmDayAdd() {
     if (!addDay || !addTitle.trim()) return;
@@ -902,17 +1072,28 @@ ${JSON.stringify(list)}
                               {it.place && (
                                 <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(it.place)}`} target="_blank" rel="noopener noreferrer" style={S.calEvPlace} onClick={e=>e.stopPropagation()}>📍 {it.place}</a>
                               )}
-                              {it.attachments && it.attachments.length>0 && (
-                                <div style={S.attListSm}>
-                                  {it.attachments.map((a,i)=>(
-                                    <div key={i} style={S.attChipSm} onClick={()=>openAtt(a)}>
-                                      {a.t==="img" ? <img src={a.data} alt="" style={S.attThumbSm}/> : <span>{a.t==="pdf"?"📄":"🔗"}</span>}
-                                      <span style={S.attNameSm}>{a.t==="url" ? a.url.replace(/^https?:\/\//,"").slice(0,18) : (a.name||"写真")}</span>
-                                      <span style={S.attXSm} onClick={e=>{e.stopPropagation(); removeItemAtt(it.id,i);}}>✕</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
+                              {(() => {
+                                const srcs = sourceAtts(it);  // 放り込んだ元ファイル＝貼り直し不要でここに出る
+                                const atts = it.attachments || [];
+                                if (!srcs.length && !atts.length) return null;
+                                return (
+                                  <div style={S.attListSm}>
+                                    {srcs.map((a,i)=>(
+                                      <div key={`s${i}`} style={{...S.attChipSm, ...S.attChipSrc}} onClick={()=>openAtt(a)}>
+                                        {a.t==="img" ? <img src={a.data} alt="" style={S.attThumbSm}/> : <span>{attIconOf(a)}</span>}
+                                        <span style={S.attNameSm}>{attLabelOf(a).slice(0,18)}</span>
+                                      </div>
+                                    ))}
+                                    {atts.map((a,i)=>(
+                                      <div key={i} style={S.attChipSm} onClick={()=>openAtt(a)}>
+                                        {a.t==="img" ? <img src={a.data} alt="" style={S.attThumbSm}/> : <span>{attIconOf(a)}</span>}
+                                        <span style={S.attNameSm}>{attLabelOf(a).slice(0,18)}</span>
+                                        <span style={S.attXSm} onClick={e=>{e.stopPropagation(); removeItemAtt(it.id,i);}}>✕</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
                             </div>
                             <span style={S.attPin} onClick={()=>setAttachMenuId(it.id)} title="関連を追加">📎</span>
                             {it.category==="task" && <span style={{...S.taskCheck, marginRight:0, ...(it.done?S.taskCheckOn:{})}} onClick={()=>toggleTask(it.id)}>✓</span>}
@@ -1027,6 +1208,16 @@ ${JSON.stringify(list)}
           <span style={S.askBarText}>デテコイ！（例：この前のレシピ何だっけ？）</span>
         </div>
 
+        {/* ビュー切替（カレンダーは上に常時固定＝毎日開く理由＝墓場化防止。ここで下だけ切替） */}
+        <div style={S.viewNav}>
+          {[["cards","カード置き場","🗂"],["category","分類別","🏷"],["album","写真アルバム","🖼"],["map","自分だけの地図","🗺"]].map(([v,l,ic])=>(
+            <div key={v} onClick={()=>setView(v)} style={{...S.viewTab, ...(view===v?S.viewTabOn:{})}}>
+              <span style={S.viewTabIc}>{ic}</span><span>{l}</span>
+            </div>
+          ))}
+        </div>
+
+        {view==="cards" && (<>
         <div style={S.boxHeadRow}>
           <span style={S.boxHead}>気になる箱</span>
           <div style={S.sortWrap}>
@@ -1112,9 +1303,74 @@ ${JSON.stringify(list)}
             );
           })}
         </div>
+        </>)}
+
+        {/* 分類別ビュー */}
+        {view==="category" && (
+          <div style={S.catViewWrap}>
+            {(() => {
+              const nonEmpty = Object.keys(CATS).filter(k => (items||[]).some(it => it.category===k));
+              if (nonEmpty.length===0) return (
+                <div style={S.wallEmpty}><div style={S.wallEmptyEmoji}>🗂️</div><div style={S.wallEmptyTitle}>まだ空っぽ</div><div style={S.wallEmptyText}>放り込むと、ここに分類別で並びます。</div></div>
+              );
+              return nonEmpty.map(k => {
+                const c = CATS[k];
+                const list = (items||[]).filter(it => it.category===k);
+                return (
+                  <div key={k} style={S.catSec}>
+                    <div style={S.catSecHead}><span style={{...S.tabDot, background:c.dot}}/><span style={S.catSecName}>{c.label}</span><span style={S.catSecCount}>{list.length}</span></div>
+                    <div style={S.catSecList}>
+                      {list.map(it => (
+                        <div key={it.id} style={S.catRow} onClick={()=>{ if(it._img||it.image) setLightbox(it._img||it.image); }}>
+                          {(it._img||it.image) && <img src={it._img||it.image} alt="" style={S.catThumb} onError={e=>{e.target.style.display='none';}} />}
+                          <div style={S.catRowMain}>
+                            <div style={S.catRowTitle}>{it.title}</div>
+                            {(it.place||it.meta) && <div style={S.catRowMeta}>{it.place?`📍${it.place}`:it.meta}</div>}
+                          </div>
+                          {it.chip && <span style={{...S.catRowChip, color:c.chipC, background:c.chip}}>{it.chip}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        )}
+
+        {/* 写真アルバムビュー */}
+        {view==="album" && (
+          <div style={S.albumGridWrap}>
+            {(() => {
+              const photos = (items||[]).filter(it => it._img || it.image);
+              if (photos.length===0) return (
+                <div style={S.wallEmpty}><div style={S.wallEmptyEmoji}>🖼️</div><div style={S.wallEmptyTitle}>写真はまだない</div><div style={S.wallEmptyText}>スクショや写真を放り込むと、ここにアルバムとして並びます。</div></div>
+              );
+              return (
+                <div style={S.albumGrid}>
+                  {photos.map(it => (
+                    <div key={it.id} style={S.albumCell} onClick={()=>setLightbox(it._img||it.image)}>
+                      <img src={it._img||it.image} alt="" style={S.albumCellImg} onError={e=>{e.target.style.display='none';}} />
+                      {it.geo && it.geo.place && <span style={S.albumCellPlace}>📍{it.geo.place}</span>}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* 自分だけの地図ビュー（Leaflet＋OSM・完全無料） */}
+        {view==="map" && <BoxMap items={items||[]} onPlan={(it)=>{
+          // 地図のピンから「予定に入れる」＝興味×予定リンク(moat③)。今日の追加シートをプリフィルで開く
+          setAddDay(toDateStr(new Date()));
+          setAddType("event");
+          setAddTitle(it.title);
+          setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none");
+        }} />}
 
         <input ref={attImgRef} type="file" accept="image/*" style={{display:"none"}} onChange={onAttImg} />
-        <input ref={attPdfRef} type="file" accept="application/pdf" style={{display:"none"}} onChange={onAttPdf} />
+        <input ref={attFileRef} type="file" style={{display:"none"}} onChange={onAttFile} />
 
         <div style={S.dock}>
           <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={pickCamera} />
@@ -1178,7 +1434,7 @@ ${JSON.stringify(list)}
               <div style={S.chipRow}>
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("img",{mode:"new"})}>📷 写真</div>
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("url",{mode:"new"})}>🔗 URL</div>
-                <div style={S.attAddBtn} onClick={()=>triggerAttach("pdf",{mode:"new"})}>📄 PDF</div>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("file",{mode:"new"})}>📄 ファイル</div>
               </div>
               {urlEntry && urlEntry.mode==="new" && (
                 <div style={S.urlRow}>
@@ -1192,8 +1448,8 @@ ${JSON.stringify(list)}
                 <div style={S.attList}>
                   {addAtts.map((a,i)=>(
                     <div key={i} style={S.attChip}>
-                      {a.t==="img" ? <img src={a.data} alt="" style={S.attThumb}/> : <span style={S.attIcon}>{a.t==="pdf"?"📄":"🔗"}</span>}
-                      <span style={S.attName}>{a.t==="url" ? a.url.replace(/^https?:\/\//,"").slice(0,26) : (a.name||"写真")}</span>
+                      {a.t==="img" ? <img src={a.data} alt="" style={S.attThumb}/> : <span style={S.attIcon}>{attIconOf(a)}</span>}
+                      <span style={S.attName}>{attLabelOf(a).slice(0,26)}</span>
                       <span style={S.attX} onClick={()=>removeNewAtt(i)}>✕</span>
                     </div>
                   ))}
@@ -1214,11 +1470,11 @@ ${JSON.stringify(list)}
             <div style={S.sheet} onClick={e=>e.stopPropagation()}>
               <div style={S.sheetGrip}/>
               <div style={S.sheetTitle}>📎 この予定に紐づける</div>
-              <div style={S.sheetSub}>写真・URL・PDF を後から追加できます。</div>
+              <div style={S.sheetSub}>写真・URL・ファイル（PDF / Word / Excel など何でも）を後から追加できます。</div>
               <div style={S.chipRow}>
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("img",{mode:"existing",id:attachMenuId})}>📷 写真</div>
                 <div style={S.attAddBtn} onClick={()=>triggerAttach("url",{mode:"existing",id:attachMenuId})}>🔗 URL</div>
-                <div style={S.attAddBtn} onClick={()=>triggerAttach("pdf",{mode:"existing",id:attachMenuId})}>📄 PDF</div>
+                <div style={S.attAddBtn} onClick={()=>triggerAttach("file",{mode:"existing",id:attachMenuId})}>📄 ファイル</div>
               </div>
               {urlEntry && urlEntry.mode==="existing" && (
                 <div style={S.urlRow}>
@@ -1579,6 +1835,37 @@ const S = {
   sortWrap: { display:"flex", gap:2, background:"rgba(120,120,150,0.09)", borderRadius:100, padding:3 },
   sortBtn: { fontSize:10.5, fontWeight:700, color:"#8a8a9a", padding:"4px 10px", borderRadius:100, cursor:"pointer", whiteSpace:"nowrap" },
   sortBtnOn: { background:"#fff", color:"#16161e", boxShadow:"0 1px 4px rgba(0,0,0,0.1)" },
+  // ── ビュー切替バー ──
+  viewNav: { display:"flex", gap:6, padding:"4px 16px 12px", overflowX:"auto" },
+  viewTab: { display:"flex", alignItems:"center", gap:5, padding:"8px 13px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0, fontSize:12.5, fontWeight:700, color:"#7a7a88" },
+  viewTabOn: { background:"linear-gradient(120deg,#16161e,#3a3a4e)", color:"#fff", border:"1px solid transparent" },
+  viewTabIc: { fontSize:14 },
+  // ── 分類別ビュー ──
+  catViewWrap: { padding:"0 18px 150px" },
+  catSec: { marginBottom:18 },
+  catSecHead: { display:"flex", alignItems:"center", gap:8, padding:"0 2px 8px" },
+  catSecName: { fontSize:14, fontWeight:800, color:"#2a2a34" },
+  catSecCount: { fontSize:11, fontWeight:700, color:"#a0a0ac", background:"#f0f0f5", borderRadius:100, padding:"1px 8px" },
+  catSecList: { display:"flex", flexDirection:"column", gap:7 },
+  catRow: { display:"flex", alignItems:"center", gap:10, background:"rgba(255,255,255,0.72)", border:"1px solid rgba(255,255,255,0.9)", borderRadius:14, padding:"9px 11px", cursor:"pointer" },
+  catThumb: { width:38, height:38, borderRadius:9, objectFit:"cover", flexShrink:0 },
+  catRowMain: { flex:1, minWidth:0 },
+  catRowTitle: { fontSize:13, fontWeight:700, color:"#22222c", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  catRowMeta: { fontSize:11, color:"#9a9aa6", marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  catRowChip: { fontSize:10.5, fontWeight:800, borderRadius:100, padding:"3px 9px", flexShrink:0, whiteSpace:"nowrap" },
+  // ── 写真アルバムビュー ──
+  albumGridWrap: { padding:"0 16px 150px" },
+  albumGrid: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 },
+  albumCell: { position:"relative", paddingTop:"100%", borderRadius:12, overflow:"hidden", background:"#ececf2", cursor:"pointer" },
+  albumCellImg: { position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover" },
+  albumCellPlace: { position:"absolute", left:4, bottom:4, right:4, fontSize:9.5, fontWeight:700, color:"#fff", background:"rgba(0,0,0,0.42)", borderRadius:7, padding:"2px 5px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  // ── 自分だけの地図ビュー ──
+  mapBox: { height:"62vh", minHeight:340, borderRadius:16, overflow:"hidden", border:"1px solid rgba(0,0,0,0.06)", zIndex:0 },
+  mapLoading: { position:"absolute", top:14, left:"50%", transform:"translateX(-50%)", background:"rgba(22,22,30,0.88)", color:"#fff", fontSize:12, fontWeight:700, padding:"7px 14px", borderRadius:100, zIndex:500, whiteSpace:"nowrap" },
+  mapEmpty: { position:"absolute", left:16, right:16, top:0, height:"62vh", minHeight:340, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", textAlign:"center", padding:"0 30px", background:"rgba(248,248,252,0.9)", borderRadius:16, zIndex:400 },
+  mapEmptyEmoji: { fontSize:40, marginBottom:10 },
+  mapEmptyTitle: { fontSize:15, fontWeight:800, color:"#2a2a34", marginBottom:6 },
+  mapEmptyText: { fontSize:12.5, color:"#8a8a96", lineHeight:1.7 },
   tabs: { display:"flex", gap:6, padding:"0 20px 12px", overflowX:"auto" },
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
@@ -1717,6 +2004,7 @@ const S = {
   attX: { fontSize:11, color:"#b0b0bc", cursor:"pointer", padding:"0 2px", fontWeight:700 },
   attListSm: { display:"flex", flexWrap:"wrap", gap:6, marginTop:5 },
   attChipSm: { display:"flex", alignItems:"center", gap:4, background:"#f4f4f8", borderRadius:8, padding:"3px 6px", cursor:"pointer", maxWidth:"100%" },
+  attChipSrc: { background:"rgba(155,107,255,0.10)", border:"1px solid rgba(155,107,255,0.22)" }, // 元ファイル＝箱に放り込んだ本体
   attThumbSm: { width:18, height:18, borderRadius:4, objectFit:"cover" },
   attNameSm: { fontSize:10.5, fontWeight:600, color:"#5a5a6a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:120 },
   attXSm: { fontSize:9.5, color:"#bcbcc8", fontWeight:700, padding:"0 1px" },
