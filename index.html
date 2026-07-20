@@ -1369,33 +1369,40 @@ ${JSON.stringify(list)}
 
         {/* 分類別ビュー */}
         {view==="category" && (
-          <div style={S.catViewWrap}>
+          <div style={S.catGridWrap}>
             {(() => {
               const nonEmpty = Object.keys(CATS).filter(k => (items||[]).some(it => it.category===k));
               if (nonEmpty.length===0) return (
                 <div style={S.wallEmpty}><div style={S.wallEmptyEmoji}>🗂️</div><div style={S.wallEmptyTitle}>まだ空っぽ</div><div style={S.wallEmptyText}>放り込むと、ここに分類別で並びます。</div></div>
               );
-              return nonEmpty.map(k => {
-                const c = CATS[k];
-                const list = (items||[]).filter(it => it.category===k);
-                return (
-                  <div key={k} style={S.catSec}>
-                    <div style={S.catSecHead}><span style={{...S.tabDot, background:c.dot}}/><span style={S.catSecName}>{c.label}</span><span style={S.catSecCount}>{list.length}</span></div>
-                    <div style={S.catSecList}>
-                      {list.map(it => (
-                        <div key={it.id} style={S.catRow} onClick={()=>{ if(it._img||it.image) setLightbox(it._img||it.image); }}>
-                          {(it._img||it.image) && <img src={it._img||it.image} alt="" style={S.catThumb} onError={e=>{e.target.style.display='none';}} />}
-                          <div style={S.catRowMain}>
-                            <div style={S.catRowTitle}>{it.title}</div>
-                            {(it.place||it.meta) && <div style={S.catRowMeta}>{it.place?`📍${it.place}`:it.meta}</div>}
+              return (
+                <div style={S.catGrid}>
+                  {nonEmpty.map(k => {
+                    const c = CATS[k];
+                    const list = (items||[]).filter(it => it.category===k);
+                    const photos = list.filter(it => it._img || it.image).slice(0,4);
+                    const tiles = Array.from({length:4}, (_,i) => photos[i] || null);
+                    return (
+                      <div key={k} style={S.catCard} onClick={()=>{ setFilter(k); setView("cards"); }}>
+                        <div style={S.catCover}>
+                          <div style={S.catCoverInner}>
+                            {tiles.map((t,i) => t
+                              ? <img key={i} src={t._img||t.image} alt="" style={S.catCoverImg} onError={e=>{e.target.style.visibility='hidden';}} />
+                              : <div key={i} style={{...S.catCoverTile, background:c.grad, opacity:[0.92,0.78,0.85,0.72][i]}} />
+                            )}
                           </div>
-                          {it.chip && <span style={{...S.catRowChip, color:c.chipC, background:c.chip}}>{it.chip}</span>}
+                          <span style={S.catCoverCount}>{list.length}</span>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              });
+                        <div style={S.catCardFoot}>
+                          <span style={{...S.tabDot, background:c.dot, flexShrink:0}}/>
+                          <span style={S.catCardName}>{c.label}</span>
+                          <span style={S.catCardChev}>›</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
             })()}
           </div>
         )}
@@ -1921,6 +1928,18 @@ const S = {
   viewTabOn: { background:"linear-gradient(120deg,#16161e,#3a3a4e)", color:"#fff", border:"1px solid transparent" },
   viewTabIc: { fontSize:14 },
   // ── 分類別ビュー ──
+  // ── 分類別＝Apple写真アプリのアルバム風カード ──
+  catGridWrap: { padding:"6px 16px 150px" },
+  catGrid: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 },
+  catCard: { background:"#fff", borderRadius:22, overflow:"hidden", border:"1px solid rgba(0,0,0,0.05)", boxShadow:"0 8px 22px rgba(20,20,40,0.07)", cursor:"pointer", WebkitTapHighlightColor:"transparent" },
+  catCover: { position:"relative", width:"100%", paddingTop:"100%", background:"#eef0f4" },
+  catCoverInner: { position:"absolute", inset:0, display:"grid", gridTemplateColumns:"1fr 1fr", gridTemplateRows:"1fr 1fr", gap:2 },
+  catCoverImg: { width:"100%", height:"100%", objectFit:"cover" },
+  catCoverTile: { width:"100%", height:"100%" },
+  catCoverCount: { position:"absolute", top:8, right:8, minWidth:20, height:20, padding:"0 6px", borderRadius:100, background:"rgba(0,0,0,0.42)", backdropFilter:"blur(8px)", color:"#fff", fontSize:11.5, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" },
+  catCardFoot: { padding:"11px 12px 13px", display:"flex", alignItems:"center", gap:7 },
+  catCardName: { flex:1, fontSize:14, fontWeight:800, color:"#1c1c26", letterSpacing:"-0.01em", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  catCardChev: { fontSize:18, fontWeight:700, color:"#c6c6d0", marginTop:-2, flexShrink:0 },
   catViewWrap: { padding:"0 18px 150px" },
   catSec: { marginBottom:18 },
   catSecHead: { display:"flex", alignItems:"center", gap:8, padding:"0 2px 8px" },
