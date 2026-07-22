@@ -752,9 +752,12 @@ ${imgInstruction}
 - **searchQueryは「それで検索すれば一発で見つかる」語にする**（型番・品番・正式名称を優先。写真の商品なら「ブランド 型番」）。
 - 読み取れた事実だけを書く。存在しない型番や店名をでっち上げない（ハレーション厳禁）。
 - **予定(event)/タスク(task)は「いつ・どこで」をスケジュールに入れられるよう抽出する**：本文・画像(チラシ/スクショ/案内)から日付・開始時刻・終了時刻・場所(会場/店名/住所)を読み取り、下記time/endTime/placeに入れる。読み取れないものだけ空文字。時刻は24時間HH:MM。「19:00〜21:00」なら開始と終了を両方。
+- **画像/本文にSNSのID(@〜)やURLが"はっきり写っている"なら、その本人ページのURLを組み立ててlinkに入れる**（スクショから直接そのページへ飛べるようにするため）：
+  Instagram=https://www.instagram.com/<id>/ ／ X(Twitter)=https://x.com/<id> ／ TikTok=https://www.tiktok.com/@<id> ／ YouTube=https://www.youtube.com/@<handle> ／ その他の明示URLはそのまま記載。
+  **⚠️絶対に推測・記憶で補完しない。画面に写っている文字だけを根拠にする。読み取れない・自信がない場合は必ず空文字**（存在しないアカウントに飛ばすのは事故）。IDは@を除いた正確な綴りで。
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。特定に迷う時は先頭に『候補: A / B』を併記","chip":"価格or日時or状態の短いラベル","searchQuery":"それを検索で一発で見つける最適キーワード(型番・品番・正式名称を優先。titleより検索向けに)","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
+{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。特定に迷う時は先頭に『候補: A / B』を併記","chip":"価格or日時or状態の短いラベル","searchQuery":"それを検索で一発で見つける最適キーワード(型番・品番・正式名称を優先。titleより検索向けに)","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
 
       const content = [];
       if (img) {
@@ -787,6 +790,17 @@ ${imgInstruction}
       txt = txt.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(txt);
       if (!CATS[parsed.category]) parsed.category = "joho";
+      // AIが返したlinkは http/https のみ許可（javascript: 等の変な形式を弾く）。不正なら捨てる
+      if (parsed.link) {
+        try {
+          let raw = String(parsed.link).trim();
+          // https:// を付け忘れて「instagram.com/xxx」形式で返ってくることがあるので、素のドメインだけ補う
+          if (!/^[a-z][a-z0-9+.-]*:/i.test(raw) && /^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(raw)) raw = "https://" + raw;
+          const u = new URL(raw);
+          if (u.protocol === "http:" || u.protocol === "https:") { parsed.link = u.href; }
+          else { parsed.link = ""; parsed.linkLabel = ""; }
+        } catch (e) { parsed.link = ""; parsed.linkLabel = ""; }
+      } else { parsed.link = ""; parsed.linkLabel = ""; }
       if (parsed.date) setResultDate(parsed.date);
       setResultTime(parsed.time || "");
       setResultEnd(parsed.endTime || "");
@@ -1335,6 +1349,13 @@ ${JSON.stringify(list)}
                         📍 地図で行く
                       </a>
                     )}
+                    {/* 画像内のID/URLからAIが取り出した本人ページ＝スクショからそのまま飛べる（画像付きでも必ず出す） */}
+                    {it.link && (
+                      <a href={it.link} target="_blank" rel="noopener noreferrer"
+                         style={S.cardGoBtn} onClick={e=>e.stopPropagation()}>
+                        ↗ {it.linkLabel || "開く"}
+                      </a>
+                    )}
                     {it.sourceUrl && !heroImg && (
                       <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer"
                          style={S.cardLink} onClick={e=>e.stopPropagation()}>
@@ -1773,6 +1794,13 @@ ${JSON.stringify(list)}
                         value={resultPlace} onChange={e=>setResultPlace(e.target.value)} />
                     </>
                   )}
+                  {/* 画像内のID/URLからAIが見つけた本人ページ＝ここからすぐ飛べる */}
+                  {result.link && (
+                    <a href={result.link} target="_blank" rel="noopener noreferrer" style={S.resultGoBtn}>
+                      ↗ {result.linkLabel || "リンクを開く"}
+                      <span style={S.resultGoUrl}>{String(result.link).replace(/^https?:\/\/(www\.)?/,"").slice(0,38)}</span>
+                    </a>
+                  )}
                   <div style={S.reclassLabel}>違ったら選び直す</div>
                   <div style={S.reclass}>
                     {Object.entries(CATS).map(([k,v])=>(
@@ -2024,7 +2052,8 @@ const S = {
   dock: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", padding:"16px 24px 30px", background:"linear-gradient(to top,rgba(246,246,248,0.96) 55%,transparent)" },
   drop: { height:58, borderRadius:19, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", display:"flex", alignItems:"center", justifyContent:"center", gap:9, cursor:"pointer", boxShadow:"0 12px 30px rgba(120,110,220,0.45)" },
   dropPlus: { fontSize:20, fontWeight:300, color:"#fff" }, dropTxt:{ fontSize:15, fontWeight:700, color:"#fff" },
-  sheetWrap: { position:"fixed", inset:0, background:"rgba(10,10,20,0.4)", backdropFilter:"blur(4px)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:100 },
+  // ⚠️z-indexは下タブバー(navBar:1000)より必ず上にする（下回るとシート下部の確定ボタンがタブバーに隠れて押せない）
+  sheetWrap: { position:"fixed", inset:0, background:"rgba(10,10,20,0.4)", backdropFilter:"blur(4px)", display:"flex", alignItems:"flex-end", justifyContent:"center", zIndex:2000 },
   sheet: { width:"100%", maxWidth:440, background:"#fbfbfd", borderRadius:"28px 28px 0 0", padding:"12px 22px 30px", maxHeight:"88%", overflowY:"auto", boxShadow:"0 -10px 40px rgba(0,0,0,0.2)" },
   sheetGrip: { width:38, height:5, borderRadius:3, background:"#ddd", margin:"0 auto 16px" },
   sheetTitle: { fontSize:18, fontWeight:800, color:"#16161e", marginBottom:4, letterSpacing:"-0.02em" },
@@ -2049,9 +2078,13 @@ const S = {
   previewImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
   cardHeroImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
   cardLink: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, padding:"3px 8px", borderRadius:7, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:10, fontWeight:700, textDecoration:"none" },
+  // 画像内のID/URLから飛ぶボタン（スクショ→本人ページ）。目立つように塗り
+  cardGoBtn: { display:"inline-flex", alignItems:"center", gap:4, marginTop:6, marginRight:5, padding:"4px 9px", borderRadius:7, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:10, fontWeight:800, textDecoration:"none", boxShadow:"0 3px 10px rgba(120,110,220,0.35)" },
+  resultGoBtn: { display:"flex", alignItems:"center", gap:8, marginTop:14, padding:"12px 14px", borderRadius:14, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:13.5, fontWeight:800, textDecoration:"none", boxShadow:"0 6px 18px rgba(120,110,220,0.35)" },
+  resultGoUrl: { marginLeft:"auto", fontSize:10.5, fontWeight:700, color:"rgba(255,255,255,0.8)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:170 },
   cardImgBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:5, padding:"3px 8px", borderRadius:7, background:"rgba(100,100,150,0.1)", color:"#6a6a7a", fontSize:10, fontWeight:700, cursor:"pointer" },
   cardMapBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, marginRight:5, padding:"4px 9px", borderRadius:7, background:"rgba(47,216,122,0.16)", color:"#1aa85c", fontSize:10, fontWeight:800, textDecoration:"none" },
-  lbWrap: { position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center" },
+  lbWrap: { position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:2100, display:"flex", alignItems:"center", justifyContent:"center" },
   lbImg: { maxWidth:"92%", maxHeight:"80vh", borderRadius:16, objectFit:"contain" },
   lbClose: { position:"absolute", top:28, right:24, width:36, height:36, borderRadius:18, background:"rgba(255,255,255,0.18)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, cursor:"pointer", fontWeight:700 },
   lensHint: { position:"absolute", bottom:10, right:12, fontSize:14, opacity:0.85, filter:"drop-shadow(0 1px 3px rgba(0,0,0,0.4))" },
