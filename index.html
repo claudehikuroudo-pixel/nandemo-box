@@ -115,6 +115,9 @@ const { useState, useRef, useEffect } = React;
 
 // 仕分けに使うモデル（安いHaikuを既定に。精度を上げたいときは画面の設定から変更可）
 const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
+// 写真の"正体特定"はここの賢さで決まる（型番まで当てられるか）。最新Sonnetを使い、駄目なら旧Sonnetへ落とす。
+const IMG_MODEL = "claude-sonnet-5";
+const IMG_MODEL_FALLBACK = "claude-sonnet-4-6";
 
 // ── カテゴリ定義 ──
 const CATS = {
@@ -722,7 +725,12 @@ function App() {
 - **イベント案内・チラシ・予定のスクショ（ライブ/セミナー/勉強会/予約確認/招待状など）なら：イベント名・日付・開始/終了時刻・会場/場所を必ず読み取る**（＝予定として登録できるように）
 - スクショ・SNS・記事なら：タイトルと主要情報
 - その他：具体的な名称・特徴
-「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。`
+「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。
+
+読み取り手順（この順で画像を丁寧に見る）：
+1. 画面内の**文字を全部拾う**（ロゴ／製品名／型番の刻印・印字／タグ／値札／パッケージ／箱のJAN・品番／SNSのID／URL／店名の看板）。小さい文字ほど正体の決め手になるので特に注意して読む。
+2. 文字が読めたら、それを**そのまま**答えの核にする（勝手に一般化しない）。
+3. 文字が読めない時だけ、形状・色・特徴的な意匠から**最有力の1機種/1店舗を推定**し、confidenceを下げる。ここでも一般名詞に逃げない。`
         : sourceUrl
         ? `URLが放り込まれました。**[ページ本文(抜粋)]があれば、それを最優先で読んで**正体を特定し分類してください（本文が正・メタ情報は補助）：
 - 本文からページの主題（記事名・商品名・店名・レシピ名・イベント名）を具体的に読み取り、titleに入れる。「記事」「動画」等の一般名詞で終わらせない。
@@ -746,18 +754,19 @@ function App() {
 
 ${imgInstruction}
 
-精度ルール（重要）：
-- ブランド名・型番・固有名詞を最優先で特定し、titleに必ず入れる（一般名詞だけで終わらせない）。**確信できるなら候補を出さず一つに断定してよい＝ピンポイント。**
-- **確信が持てない時だけ**、最有力をtitleにしつつmetaの冒頭に「候補: A / B」と2〜3個の候補を併記し、confidenceを正直に下げる。
-- **searchQueryは「それで検索すれば一発で見つかる」語にする**（型番・品番・正式名称を優先。写真の商品なら「ブランド 型番」）。
-- 読み取れた事実だけを書く。存在しない型番や店名をでっち上げない（ハレーション厳禁）。
+精度ルール（最重要・ここの精度がアプリの価値）：
+- **答えは必ず1つに絞って断定する。「候補: A / B」のような併記・両論は禁止**。迷っても最有力の1つだけをtitle/searchQueryに書き、代わりにconfidenceを下げて正直さを表現する（＝ユーザーは"曖昧な答え"ではなく"1つの答え＋確信度"を求めている）。
+- 「腕時計」「バッグ」「カフェ」等の**一般名詞で終わるのは失格**。ブランド名＋型番/品番/正式名称/店名まで必ず踏み込む。
+- **searchQueryは「検索窓にそのまま貼れば1件目にその物が出る」語**にする。合格例「SEIKO SBDC181」「Dyson V12 Detect Slim」「ブルーボトルコーヒー 清澄白河」。
+  **不合格＝一般名詞だけ（「腕時計 黒」等）、「おすすめ」「通販」「人気」などの余計な語、長い文章**。検索結果ページで探し直す羽目になるクエリは失敗とみなす。
+- ただし**でっち上げは厳禁**：写っている文字・本文にない型番や店名を創作しない。読み取れない文字は無理に補完せず、読み取れた範囲で最も具体的に書き、confidenceを下げる。
 - **予定(event)/タスク(task)は「いつ・どこで」をスケジュールに入れられるよう抽出する**：本文・画像(チラシ/スクショ/案内)から日付・開始時刻・終了時刻・場所(会場/店名/住所)を読み取り、下記time/endTime/placeに入れる。読み取れないものだけ空文字。時刻は24時間HH:MM。「19:00〜21:00」なら開始と終了を両方。
 - **画像/本文にSNSのID(@〜)やURLが"はっきり写っている"なら、その本人ページのURLを組み立ててlinkに入れる**（スクショから直接そのページへ飛べるようにするため）：
   Instagram=https://www.instagram.com/<id>/ ／ X(Twitter)=https://x.com/<id> ／ TikTok=https://www.tiktok.com/@<id> ／ YouTube=https://www.youtube.com/@<handle> ／ その他の明示URLはそのまま記載。
   **⚠️絶対に推測・記憶で補完しない。画面に写っている文字だけを根拠にする。読み取れない・自信がない場合は必ず空文字**（存在しないアカウントに飛ばすのは事故）。IDは@を除いた正確な綴りで。
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。特定に迷う時は先頭に『候補: A / B』を併記","chip":"価格or日時or状態の短いラベル","searchQuery":"それを検索で一発で見つける最適キーワード(型番・品番・正式名称を優先。titleより検索向けに)","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
+{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
 
       const content = [];
       if (img) {
@@ -766,7 +775,9 @@ ${imgInstruction}
       }
       content.push({ type: "text", text: prompt });
 
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      // 写真は画像認識が段違いのSonnet(最新)。URL/テキストはページ本文を読ませるので既定モデル(安いHaiku)で十分。
+      // 万一そのモデルが使えないアカウントでも写真解析が死なないよう、旧Sonnetへ自動フォールバックする。
+      const callModel = (m) => fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -774,14 +785,15 @@ ${imgInstruction}
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true",
         },
-        body: JSON.stringify({
-          // 写真は画像認識が段違いのSonnet。URL/テキストはページ本文を読ませるので既定モデル(安いHaiku)で十分。
-          model: img ? "claude-sonnet-4-6" : model,
-          max_tokens: 1000,
-          messages: [{ role: "user", content }],
-        }),
-      });
-      const data = await res.json();
+        body: JSON.stringify({ model: m, max_tokens: 1000, messages: [{ role: "user", content }] }),
+      }).then(r => r.json());
+
+      let data = await callModel(img ? IMG_MODEL : model);
+      if (img && data.error && /model/i.test(data.error.message || "")) {
+        // 握りつぶさず、フォールバックした事実は画面に出す
+        data = await callModel(IMG_MODEL_FALLBACK);
+        if (!data.error) setError(`※${IMG_MODEL}が使えないため${IMG_MODEL_FALLBACK}で解析しました`);
+      }
       if (data.error) {
         setError("AIエラー: " + (data.error.message || "キーや残高を確認してください"));
         return;
@@ -1465,22 +1477,18 @@ ${JSON.stringify(list)}
         <input ref={attImgRef} type="file" accept="image/*" style={{display:"none"}} onChange={onAttImg} />
         <input ref={attFileRef} type="file" style={{display:"none"}} onChange={onAttFile} />
 
-        {/* 下タブバー（固定）：ホーム／分類／＋放り込む(中央)／アルバム／地図。カメラ直行は放り込むシート内に統合 */}
-        <div style={S.navBar}>
+        {/* 放り込む＝タブ列を割らずにバーの上へ浮かせて中央配置（タブの切替を明確に保ったまま、放り込むは主役のまま） */}
+        <div style={S.fabDock}>
           <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={pickCamera} />
-          {[["cards","ホーム","🏠"],["category","分類","🏷"]].map(([v,l,ic])=>(
-            <div key={v} style={{...S.navItem, ...(view===v?S.navItemOn:{})}} onClick={()=>setView(v)}>
-              {view===v && <span style={S.navInd}/>}
-              <span style={S.navIc}>{ic}</span><span style={S.navLbl}>{l}</span>
-            </div>
-          ))}
-          <div style={S.navFabWrap}>
-            <div style={S.navFab} onClick={()=>setSheet(true)}>＋</div>
-            <span style={S.navFabLbl}>放り込む</span>
+          <div style={S.navFab} onClick={()=>setSheet(true)}>
+            <span style={S.navFabPlus}>＋</span><span style={S.navFabTxt}>放り込む</span>
           </div>
-          {[["album","アルバム","🖼"],["map","地図","🗺"]].map(([v,l,ic])=>(
+        </div>
+
+        {/* 下タブバー（固定）：4つを横一列。選択中は塗りピルではっきり切り替わる */}
+        <div style={S.navBar}>
+          {[["cards","ホーム","🏠"],["category","分類","🏷"],["album","アルバム","🖼"],["map","地図","🗺"]].map(([v,l,ic])=>(
             <div key={v} style={{...S.navItem, ...(view===v?S.navItemOn:{})}} onClick={()=>setView(v)}>
-              {view===v && <span style={S.navInd}/>}
               <span style={S.navIc}>{ic}</span><span style={S.navLbl}>{l}</span>
             </div>
           ))}
@@ -1845,7 +1853,8 @@ ${JSON.stringify(list)}
               <div style={S.fieldLabel}>使うモデル</div>
               <select style={S.select} value={model} onChange={e=>setModel(e.target.value)}>
                 <option value="claude-haiku-4-5-20251001">Haiku（速い・激安・おすすめ）</option>
-                <option value="claude-sonnet-4-6">Sonnet（賢い・少し高い）</option>
+                <option value="claude-sonnet-5">Sonnet 5（賢い・少し高い）</option>
+                <option value="claude-sonnet-4-6">Sonnet 4.6（旧）</option>
               </select>
               <div style={S.help}>
                 キーの取り方： <b>console.anthropic.com</b> に登録 → Billingで$5チャージ → API keys → Create Key
@@ -2041,14 +2050,16 @@ const S = {
   menuDel: { marginTop:8, padding:"13px 10px", borderRadius:12, fontSize:14, fontWeight:800, color:"#fff", textAlign:"center", cursor:"pointer", background:"linear-gradient(120deg,#ff5e8a,#ff8f6b)", boxShadow:"0 4px 12px rgba(255,94,138,0.35)" },
   // ── 下タブバー（固定・iOS風・中央FAB） ──
   navBar: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", height:70, background:"rgba(255,255,255,0.98)", backdropFilter:"blur(20px)", borderTop:"1px solid rgba(0,0,0,0.08)", display:"flex", alignItems:"stretch", justifyContent:"space-around", paddingBottom:"env(safe-area-inset-bottom)", boxShadow:"0 -6px 24px rgba(0,0,0,0.09)", zIndex:1000 },
-  navItem: { flex:1, position:"relative", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:3, cursor:"pointer", color:"#9c9caa", userSelect:"none" },
-  navItemOn: { color:"#7c3aed" },
-  navInd: { position:"absolute", top:0, width:28, height:3, borderRadius:"0 0 3px 3px", background:"#7c3aed" },
-  navIc: { fontSize:21, lineHeight:1 },
+  // タブ＝選択中を「塗りピル」で明示（他アプリ同様、今どこかが一目で分かる）
+  navItem: { flex:1, margin:"7px 5px", borderRadius:16, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2, cursor:"pointer", color:"#9c9caa", userSelect:"none", transition:"background 0.15s, color 0.15s", WebkitTapHighlightColor:"transparent" },
+  navItemOn: { color:"#fff", background:"linear-gradient(135deg,#8b54f5,#6b8bff)", boxShadow:"0 4px 12px rgba(120,90,240,0.35)" },
+  navIc: { fontSize:20, lineHeight:1 },
   navLbl: { fontSize:10.5, fontWeight:800, letterSpacing:"0.01em" },
-  navFabWrap: { flex:1, display:"flex", flexDirection:"column", justifyContent:"center", alignItems:"center", gap:2 },
-  navFab: { width:56, height:56, marginTop:-26, borderRadius:"50%", background:"linear-gradient(135deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:30, fontWeight:300, display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 10px 26px rgba(120,90,240,0.55)", cursor:"pointer", border:"3px solid #fff" },
-  navFabLbl: { fontSize:10, fontWeight:800, color:"#7c3aed", letterSpacing:"0.01em" },
+  // 放り込む＝タブ列の上に浮かせて中央固定（タブを分断しない）
+  fabDock: { position:"fixed", bottom:78, left:0, right:0, maxWidth:440, margin:"0 auto", marginBottom:"env(safe-area-inset-bottom)", display:"flex", justifyContent:"center", pointerEvents:"none", zIndex:1001 },
+  navFab: { pointerEvents:"auto", display:"flex", alignItems:"center", gap:7, height:52, padding:"0 22px", borderRadius:26, background:"linear-gradient(135deg,#8b54f5,#6b8bff)", color:"#fff", boxShadow:"0 10px 26px rgba(120,90,240,0.5)", cursor:"pointer", border:"3px solid #fff", WebkitTapHighlightColor:"transparent" },
+  navFabPlus: { fontSize:24, fontWeight:300, lineHeight:1, marginTop:-2 },
+  navFabTxt: { fontSize:14.5, fontWeight:800, letterSpacing:"0.01em" },
   dock: { position:"fixed", bottom:0, left:0, right:0, maxWidth:440, margin:"0 auto", padding:"16px 24px 30px", background:"linear-gradient(to top,rgba(246,246,248,0.96) 55%,transparent)" },
   drop: { height:58, borderRadius:19, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", display:"flex", alignItems:"center", justifyContent:"center", gap:9, cursor:"pointer", boxShadow:"0 12px 30px rgba(120,110,220,0.45)" },
   dropPlus: { fontSize:20, fontWeight:300, color:"#fff" }, dropTxt:{ fontSize:15, fontWeight:700, color:"#fff" },
