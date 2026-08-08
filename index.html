@@ -1340,14 +1340,15 @@ ${JSON.stringify(list)}
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
                 <div style={{...S.dBar, background:c.grad}}/>
                 <div style={S.dCol}>
-                  {/* 画像タップ＝即・拡大表示（迷わせない）。"調べる"は下の独立ボタンに分離した */}
+                  {/* 画像タップ＝スキャン（調べる）。拡大は右下の「⤢ 拡大」バッジをタップ。
+                      調べる先(sourceUrl)が無い画像はタップしても何も起きないので、その場合だけ拡大に落とす */}
                   <div style={{...S.hero, ...(heroImg?{}:{background:c.grad}), ...(heroImg?{cursor:"pointer"}:{})}}
-                    onClick={e => { if(heroImg){ e.stopPropagation(); setLightbox(heroImg); } }}>
+                    onClick={e => { if(!heroImg) return; if(it.sourceUrl){ handleImageSearch(e,it); } else { e.stopPropagation(); setLightbox(heroImg); } }}>
                     {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
                     {!heroImg && <span style={S.heroGlow}/>}
                     <span style={S.cardCat}>{c.label}</span>
                     {heroImg && scanning !== it.id && (
-                      <span style={S.expandBadge}>⤢ 拡大</span>
+                      <span style={S.expandBadge} onClick={e=>{e.stopPropagation(); setLightbox(heroImg);}}>⤢ 拡大</span>
                     )}
                     {scanning === it.id && <ScanFX loop={false} />}
                   </div>
@@ -2096,8 +2097,8 @@ const S = {
   resultGoBtn: { display:"flex", alignItems:"center", gap:8, marginTop:14, padding:"12px 14px", borderRadius:14, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:13.5, fontWeight:800, textDecoration:"none", boxShadow:"0 6px 18px rgba(120,110,220,0.35)" },
   resultGoUrl: { marginLeft:"auto", fontSize:10.5, fontWeight:700, color:"rgba(255,255,255,0.8)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:170 },
   cardImgBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:5, padding:"3px 8px", borderRadius:7, background:"rgba(100,100,150,0.1)", color:"#6a6a7a", fontSize:10, fontWeight:700, cursor:"pointer" },
-  // 画像の上に出す「⤢ 拡大」＝タップで即拡大と分かる目印（薄い虫めがねから高コントラストに変更）
-  expandBadge: { position:"absolute", right:8, bottom:8, zIndex:4, display:"inline-flex", alignItems:"center", gap:3, padding:"4px 9px", borderRadius:100, background:"rgba(12,12,20,0.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", color:"#fff", fontSize:10.5, fontWeight:800, letterSpacing:"0.02em", boxShadow:"0 2px 8px rgba(0,0,0,0.3)", pointerEvents:"none" },
+  // 画像の上に出す「⤢ 拡大」＝ここをタップすると拡大（画像本体のタップはスキャンに戻したので、拡大はこのバッジが入口）
+  expandBadge: { position:"absolute", right:8, bottom:8, zIndex:11, display:"inline-flex", alignItems:"center", gap:3, padding:"6px 11px", borderRadius:100, background:"rgba(12,12,20,0.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", color:"#fff", fontSize:10.5, fontWeight:800, letterSpacing:"0.02em", boxShadow:"0 2px 8px rgba(0,0,0,0.3)", cursor:"pointer" },
   // 画像から調べる＝独立ボタン（画像タップは拡大に譲ったので、検索は文字で明示）
   cardSearchBtn: { display:"inline-flex", alignItems:"center", gap:4, marginTop:6, marginRight:5, padding:"4px 10px", borderRadius:8, background:"rgba(22,150,216,0.14)", border:"1px solid rgba(22,150,216,0.25)", color:"#1279b8", fontSize:10.5, fontWeight:800, cursor:"pointer" },
   cardMapBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, marginRight:5, padding:"4px 9px", borderRadius:7, background:"rgba(47,216,122,0.16)", color:"#1aa85c", fontSize:10, fontWeight:800, textDecoration:"none" },
