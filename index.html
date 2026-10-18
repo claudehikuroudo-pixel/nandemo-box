@@ -153,17 +153,127 @@ function toDateStr(dt) {
   return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 }
 
-function compressImage(dataUrl) {
+// ── YouTube ──
+// 動画ページ本体は microlink(無料枠＝antibotで失敗)・Jina(YouTubeを一時ブロック)とも読めず「内容不明」になっていた（2026-10-18実測）。
+// 公式oEmbed(題名・チャンネル)とサムネ画像(i.ytimg.com)はCORS許可＝ブラウザから直接読めるので、そこから中身を割り出す。
+function ytIdOf(url) {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^(www|m|music)\./, "");
+    let id = null;
+    if (h === "youtu.be") id = u.pathname.split("/")[1];
+    else if (h === "youtube.com" || h === "youtube-nocookie.com") {
+      id = u.searchParams.get("v");
+      if (!id) { const m = u.pathname.match(/^\/(shorts|live|embed|v)\/([\w-]{11})/); if (m) id = m[2]; }
+    }
+    return id && /^[\w-]{11}$/.test(id) ? id : null;
+  } catch (e) { return null; }
+}
+const ytThumb = (id, name) => `https://i.ytimg.com/vi/${id}/${name}.jpg`;
+// カードのYouTube動画ID（この機能より前に入れたカードはytを持たないのでURLから割り出す）
+const ytOf = it => (it && (it.yt || (it.sourceUrl && !it.searchLabel ? ytIdOf(it.sourceUrl) : null))) || null;
+// 高画質(maxres)が無い動画は404になるので、読めなければ16:9の中画質(mq)へ落とす
+const YT_FRAME_FALLBACK = { maxresdefault: "mqdefault", maxres1: "mq1", maxres2: "mq2", maxres3: "mq3" };
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
+}
+
+// カードに出す写真＝自分で差し替えた写真(cover) > 放り込んだ写真 > URL先のサムネ。cover:"none"＝写真なしにした
+function coverOf(it) {
+  if (!it || it.cover === "none") return "";
+  return it.cover || it._img || it.image || "";
+}
+// 編集で決めた写真の見え方（位置・拡大）
+function coverFx(pos) {
+  if (!pos) return {};
+  const z = pos.z || 1;
+  return { objectPosition: `${pos.x}% ${pos.y}%`, transform: z !== 1 ? `scale(${z})` : undefined, transformOrigin: `${pos.x}% ${pos.y}%` };
+}
+
+// 材料リストの出どころ（正直に出す＝推定を本物と取り違えさせない）
+const ING_SRC = {
+  page:   { label: "ページから",     color: "#1aa85c", bg: "rgba(47,216,122,0.14)" },
+  desc:   { label: "概要欄から",     color: "#1aa85c", bg: "rgba(47,216,122,0.14)" },
+  screen: { label: "画面から",       color: "#1aa85c", bg: "rgba(47,216,122,0.14)" },
+  text:   { label: "貼った文章から", color: "#1aa85c", bg: "rgba(47,216,122,0.14)" },
+  guess:  { label: "推定",           color: "#b45309", bg: "rgba(245,158,11,0.16)" },
+};
+// AIが返した材料を {name, qty} にそろえる（空・重複を捨て、上限40）
+function normIngredients(arr) {
+  if (!Array.isArray(arr)) return [];
+  const seen = new Set(), out = [];
+  for (const x of arr) {
+    const isStr = typeof x === "string";
+    const name = String((isStr ? x : x && x.name) || "").trim().slice(0, 40);
+    if (!name) continue;
+    const qty = String((!isStr && x && x.qty) || "").trim().slice(0, 30);
+    const key = name + "|" + qty;
+    if (seen.has(key)) continue;
+    seen.add(key); out.push({ name, qty });
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+// 買い物リストで同じ材料を1行に寄せるための鍵（全角半角・空白・かっこ書きの違いは同じ材料とみなす）
+function ingKey(name) {
+  return String(name || "").normalize("NFKC").replace(/\([^)]*\)/g, "").replace(/\s+/g, "").toLowerCase();
+}
+// 「卵 (Mサイズ)」→ { base:"卵", note:"Mサイズ" }
+function ingParts(name) {
+  const n = String(name || "").normalize("NFKC");
+  const m = n.match(/\(([^)]*)\)/);
+  return { base: n.replace(/\([^)]*\)/g, "").trim() || n.trim(), note: m ? m[1].trim() : "" };
+}
+// 「今日から7日間」に作るレシピ（作る日＝item.date）
+function weekRecipes(items, today) {
+  const from = toDateStr(today);
+  const end = new Date(today); end.setDate(end.getDate() + 6);
+  const to = toDateStr(end);
+  return (items || []).filter(it => it.category === "recipe" && it.date && it.date >= from && it.date <= to)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+// 複数レシピの材料を1つの買い物リストに。分量は勝手に合算せず「200g＋150g」と並べる（単位がばらばらで合算は事故のもと）
+function buildShopRows(recipes) {
+  const map = new Map(), rows = [];
+  for (const r of recipes) {
+    (r.ingredients || []).forEach((g, idx) => {
+      const key = ingKey(g.name);
+      if (!key) return;
+      const { base, note } = ingParts(g.name);
+      let row = map.get(key);
+      if (!row) { row = { key, name: base, parts: [], refs: [], guess: false, titles: [] }; map.set(key, row); rows.push(row); }
+      const part = [g.qty, note && `(${note})`].filter(Boolean).join(" ");
+      if (part) row.parts.push(part);
+      row.refs.push({ id: r.id, idx });
+      if (r.ingSrc === "guess") row.guess = true;
+      if (!row.titles.includes(r.title)) row.titles.push(r.title);
+    });
+  }
+  // 丸＝家にある・買った。寄せた行は「元の全レシピで丸」のときだけ丸
+  const haveOf = (row) => row.refs.every(ref => { const r = recipes.find(x => x.id === ref.id); return r && r.ingredients[ref.idx] && r.ingredients[ref.idx].have; });
+  return rows.map(row => ({ ...row, qty: row.parts.join("＋"), have: haveOf(row) }));
+}
+const WD = ["日","月","火","水","木","金","土"];
+const mdw = (s) => { const d = new Date(s + "T00:00"); return `${d.getMonth()+1}/${d.getDate()}（${WD[d.getDay()]}）`; };
+
+// 「豚バラ 200g」→ {name:"豚バラ", qty:"200g"}（最後の語が分量っぽければ分ける）
+function splitIngLine(s) {
+  const t = String(s || "").trim().replace(/\s+/g, " ");
+  const m = t.match(/^(.+?)[\s　]+((?:約|大さじ|小さじ|カップ|ひとつまみ|少々|適量|適宜|お好みで|[0-9０-９½¼¾/.〜~\-]+).*)$/);
+  return m ? { name: m[1], qty: m[2] } : { name: t, qty: "" };
+}
+
+// 既定(600px・画質0.45)は保存用。材料表のような小さい文字を読ませる時は大きめ・高画質で呼ぶ
+function compressImage(dataUrl, maxW = 600, quality = 0.45) {
   return new Promise(resolve => {
     const img = new Image();
     img.onload = () => {
-      const maxW = 600;
       const scale = Math.min(1, maxW / img.width);
       const c = document.createElement('canvas');
       c.width = Math.round(img.width * scale);
       c.height = Math.round(img.height * scale);
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      resolve(c.toDataURL('image/jpeg', 0.45));
+      resolve(c.toDataURL('image/jpeg', quality));
     };
     img.src = dataUrl;
     img.onerror = () => resolve(dataUrl);
@@ -528,6 +638,25 @@ function App() {
   const [attachMenuId, setAttachMenuId] = useState(null); // 既存予定に後から添付するときの対象id
   const [urlEntry, setUrlEntry] = useState(null);      // URL添付のインライン入力中の対象 {mode,id} or null
   const [urlText, setUrlText] = useState("");          // URL入力欄の値
+  const [recipeId, setRecipeId] = useState(null);      // 材料シートを開いているレシピのid
+  const [ingBusy, setIngBusy] = useState(false);       // 材料を読み取り中
+  const [ingMsg, setIngMsg] = useState("");            // 材料シートの案内・エラー（黙って失敗しない）
+  const [ingEdit, setIngEdit] = useState(false);       // 材料の削除モード
+  const [ingAdd, setIngAdd] = useState("");            // 材料を1つ足す入力欄
+  const [ingPaste, setIngPaste] = useState(null);      // 文章を貼って読み取る欄（null=閉じている）
+  const [editId, setEditId] = useState(null);          // 題名・写真を編集中のカードid
+  const [editTitle, setEditTitle] = useState("");
+  const [editCover, setEditCover] = useState(null);    // null=元の写真 / "none"=写真なし / 差し替えた写真(dataURL or URL)
+  const [editPos, setEditPos] = useState({ x: 50, y: 50, z: 1 }); // 写真の位置(%)と拡大率
+  const [editFrames, setEditFrames] = useState(false); // 「動画の場面から選ぶ」を開いているか
+  const [editMsg, setEditMsg] = useState("");          // 編集シートの案内・エラー
+  const [editBusy, setEditBusy] = useState(false);     // YouTubeから取り直し中
+  const [shopOpen, setShopOpen] = useState(false);     // 今週の買い物リスト
+  const [shopOnlyNeed, setShopOnlyNeed] = useState(false); // 「買うものだけ」表示
+  const [shopMsg, setShopMsg] = useState("");
+  const ingImgRef = useRef(null);   // 材料が映った画面のスクショ
+  const coverFileRef = useRef(null); // サムネを自分の写真に差し替え
+  const dragRef = useRef(null);      // 写真の位置ドラッグ中の起点
   const notifiedRef = useRef(new Set()); // 通知済みidを記録（重複通知防止）
   const fileRef = useRef(null);
   const cameraRef = useRef(null); // 直行カメラ用input
@@ -692,8 +821,44 @@ function App() {
       let t = (await res.text()).trim();
       if (!t) return null;
       // 分類に必要な冒頭だけ使う（トークン節約）。ナビ等のノイズは冒頭に混じるが本文が続く。
-      return t.slice(0, 3500);
+      return t.slice(0, 6000); // レシピサイトは材料表が本文の中ほどにあるので3500では切れることがあった
     } catch (e) { return null; }
+  }
+
+  // YouTube：公式oEmbedで題名・チャンネル、AIに見せるサムネ画像を取る。取れなかった物は空のまま返す（呼び出し側が画面に出す）
+  async function fetchYouTube(id) {
+    let meta = null, thumbData = "";
+    try {
+      const r = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent("https://www.youtube.com/watch?v=" + id)}&format=json`);
+      if (r.ok) { const d = await r.json(); meta = { title: d.title || "", author: d.author_name || "" }; }
+    } catch (e) {}
+    try {
+      const r = await fetch(ytThumb(id, "hqdefault"));
+      if (r.ok) thumbData = await blobToDataUrl(await r.blob());
+    } catch (e) {}
+    return { meta, thumbData };
+  }
+  // カードに出すサムネ：高画質(maxres)があればそれ、無ければ16:9の中画質
+  function ytCardThumb(id) {
+    return new Promise(resolve => {
+      const im = new Image();
+      im.onload = () => resolve(ytThumb(id, im.naturalWidth > 200 ? "maxresdefault" : "mqdefault"));
+      im.onerror = () => resolve(ytThumb(id, "mqdefault"));
+      im.src = ytThumb(id, "maxresdefault");
+    });
+  }
+  // Claude呼び出し（ブラウザ直）。失敗は data.error で返る
+  function callClaude(m, content, maxTokens) {
+    return fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({ model: m, max_tokens: maxTokens, messages: [{ role: "user", content }] }),
+    }).then(r => r.json());
   }
 
   async function analyze(text, img) {
@@ -701,10 +866,13 @@ function App() {
     setBusy(true); setError(""); setResult(null);
     try {
       const sourceUrl = extractUrl(text);
-      let urlMeta = null, pageText = null;
+      const ytId = sourceUrl ? ytIdOf(sourceUrl) : null;
+      let urlMeta = null, pageText = null, yt = null;
       if (sourceUrl) {
-        // メタ情報と本文を同時取得（本文が読めれば分類はほぼそれで決まる）
-        [urlMeta, pageText] = await Promise.all([fetchUrlMeta(sourceUrl), fetchPageText(sourceUrl)]);
+        // メタ情報と本文を同時取得（本文が読めれば分類はほぼそれで決まる）。YouTubeは公式oEmbed＋サムネも並行で取る
+        [urlMeta, pageText, yt] = await Promise.all([
+          fetchUrlMeta(sourceUrl), fetchPageText(sourceUrl), ytId ? fetchYouTube(ytId) : Promise.resolve(null),
+        ]);
       }
 
       let contextText = text || "";
@@ -712,6 +880,12 @@ function App() {
         contextText += `\n\n[ページ情報]\nURL: ${sourceUrl}\nタイトル: ${urlMeta.title}\n発信元: ${urlMeta.publisher}\n説明: ${urlMeta.description}`;
       } else if (sourceUrl) {
         contextText += `\n\n[ページ情報]\nURL: ${sourceUrl}`;
+      }
+      if (yt) {
+        const thumbNote = (!img && yt.thumbData) ? "添付画像はこの動画のサムネイル。" : ""; // 写真も一緒に放り込まれた時は写真を優先して見せる
+        contextText += yt.meta
+          ? `\n\n[YouTube動画]\nタイトル: ${yt.meta.title}\nチャンネル: ${yt.meta.author}\n※動画の概要欄・音声・字幕は読めていない。${thumbNote}`
+          : `\n\n[YouTube動画]\n動画の情報を取得できなかった（非公開・削除・年齢制限などの可能性）。${thumbNote}`;
       }
       if (pageText) {
         contextText += `\n\n[ページ本文(抜粋)]\n${pageText}`;
@@ -723,6 +897,7 @@ function App() {
   例：「SEIKO プロスペックス SBDC181」「Apple Watch Series 9」「ダイソン V12」のように**型番・世代まで**踏み込む。
 - 場所・店・カフェ・レストランなら：店名・場所・ジャンル
 - **イベント案内・チラシ・予定のスクショ（ライブ/セミナー/勉強会/予約確認/招待状など）なら：イベント名・日付・開始/終了時刻・会場/場所を必ず読み取る**（＝予定として登録できるように）
+- **料理・レシピ・料理動画の画面なら：料理名を特定し、画面に材料の一覧が写っていれば材料と分量を全部読み取る**（＝買い物リストにできるように）
 - スクショ・SNS・記事なら：タイトルと主要情報
 - その他：具体的な名称・特徴
 「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。
@@ -734,6 +909,7 @@ function App() {
         : sourceUrl
         ? `URLが放り込まれました。**[ページ本文(抜粋)]があれば、それを最優先で読んで**正体を特定し分類してください（本文が正・メタ情報は補助）：
 - 本文からページの主題（記事名・商品名・店名・レシピ名・イベント名）を具体的に読み取り、titleに入れる。「記事」「動画」等の一般名詞で終わらせない。
+- **[YouTube動画]のときは、タイトル・チャンネル名・添付のサムネイル（料理の見た目・焼き込まれた文字）から何の動画かを具体的に特定する**。タイトルが「神レシピ」「これ最強」のように中身を言っていなくても、サムネの料理や文字から料理名・商品名・店名まで踏み込む。料理動画ならrecipe。
 - 本文が無い／薄い時だけ、**ドメインを手がかり**に：クラシル/クックパッド/DELISH KITCHEN=recipe、食べログ/ぐるなび/Googleマップ/Retty=basho、Amazon/楽天/メルカリ/ZOZO/価格.com等のEC=mono、新聞・ニュースメディア=news、note/個人ブログ/YouTube/ハウツー記事=joho、connpass/Peatix/セミナー告知=event。
 - 本文に無いことは書かない（ハレーション厳禁）。確信が持てなければconfidenceを下げる。
 放り込まれた内容:\n"""${contextText}"""`
@@ -764,29 +940,28 @@ ${imgInstruction}
 - **画像/本文にSNSのID(@〜)やURLが"はっきり写っている"なら、その本人ページのURLを組み立ててlinkに入れる**（スクショから直接そのページへ飛べるようにするため）：
   Instagram=https://www.instagram.com/<id>/ ／ X(Twitter)=https://x.com/<id> ／ TikTok=https://www.tiktok.com/@<id> ／ YouTube=https://www.youtube.com/@<handle> ／ その他の明示URLはそのまま記載。
   **⚠️絶対に推測・記憶で補完しない。画面に写っている文字だけを根拠にする。読み取れない・自信がない場合は必ず空文字**（存在しないアカウントに飛ばすのは事故）。IDは@を除いた正確な綴りで。
+- **レシピ(recipe)のときは材料を ingredients に入れ、出どころを ingSrc に正直に書く**（買い物リストに使う）：
+  - 本文・説明・画像に材料が書いてある → **書いてある材料だけ**を、分量も原文どおり写す（調味料・「適量」「少々」も含める）。本文や説明から＝"page"、画像に写った材料表から＝"screen"
+  - 材料はどこにも書いていないが料理名ははっきり分かる（例：YouTubeで題名とサムネしか読めない）→ その料理の一般的な材料と目安量を出し、ingSrc＝"guess"（推定であることはアプリが表示する）
+  - 料理名も分からない → ingredients は空配列、ingSrc は空文字
+  - レシピ以外のカテゴリでは ingredients は空配列
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
+{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","ingredients":[{"name":"材料名","qty":"分量(原文どおり。なければ空文字)"}],"ingSrc":"page|screen|guess のどれか。材料が空なら空文字","servings":"何人分(分かれば。例:2人分)。なければ空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
 
       const content = [];
-      if (img) {
-        const m = img.match(/^data:(image\/\w+);base64,(.+)$/);
+      // 見せる画像＝放り込まれた写真。無ければYouTubeのサムネ（題名が曖昧でも料理や商品が写っている）
+      const visual = img || (yt && yt.thumbData) || null;
+      if (visual) {
+        const m = visual.match(/^data:(image\/\w+);base64,(.+)$/);
         if (m) content.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
       }
       content.push({ type: "text", text: prompt });
 
       // 写真は画像認識が段違いのSonnet(最新)。URL/テキストはページ本文を読ませるので既定モデル(安いHaiku)で十分。
       // 万一そのモデルが使えないアカウントでも写真解析が死なないよう、旧Sonnetへ自動フォールバックする。
-      const callModel = (m) => fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({ model: m, max_tokens: 1000, messages: [{ role: "user", content }] }),
-      }).then(r => r.json());
+      // max_tokens：材料リスト(最大40品)が入るぶん1000→2000
+      const callModel = (m) => callClaude(m, content, 2000);
 
       let data = await callModel(img ? IMG_MODEL : model);
       if (img && data.error && /model/i.test(data.error.message || "")) {
@@ -822,8 +997,30 @@ ${imgInstruction}
         || (img ? `https://www.google.com/search?q=${encodeURIComponent(parsed.searchQuery || parsed.title)}` : null);
       parsed.searchLabel = img && !sourceUrl ? "Googleで調べる" : null;
       if (img) parsed._img = img;
-      // URL先のサムネ画像(og:image)をカード表示用に保持
-      parsed.image = (urlMeta && urlMeta.image) ? urlMeta.image : "";
+      // URL先のサムネ画像(og:image)をカード表示用に保持。YouTubeは公式サムネを直接使う（microlinkは動画ページで失敗するため）
+      parsed.image = ytId ? await ytCardThumb(ytId) : ((urlMeta && urlMeta.image) ? urlMeta.image : "");
+      if (ytId) {
+        parsed.yt = ytId;
+        if (!parsed.meta && yt && yt.meta && yt.meta.author) parsed.meta = yt.meta.author;
+        // 動画情報が取れなかった事実は黙らず出す（題名・写真は後から直せる）
+        if (!yt || !yt.meta) setError("※YouTubeの動画情報が取れませんでした（非公開・削除などの可能性）。題名と写真は、箱に入れた後に ⋮ →「題名・写真を編集」で直せます。");
+      }
+      // レシピ：材料リスト。出どころ不明のものは安全側＝推定扱い
+      if (parsed.category === "recipe") {
+        parsed.ingredients = normIngredients(parsed.ingredients);
+        if (!parsed.ingredients.length) parsed.ingSrc = "";
+        else {
+          // AIの自己申告をそのまま信じない：読める文章／写真が実際に無かったのに「書いてあった」は推定に落とす
+          let s = ING_SRC[parsed.ingSrc] ? parsed.ingSrc : "guess";
+          const hadText = !!(pageText || (urlMeta && urlMeta.description) || (!sourceUrl && text && text.trim()));
+          if (s === "screen" && !img) s = "guess";
+          if (s !== "screen" && s !== "guess") s = !hadText ? "guess" : ytId ? "desc" : sourceUrl ? "page" : "text";
+          parsed.ingSrc = s;
+        }
+        parsed.servings = String(parsed.servings || "").slice(0, 20);
+      } else {
+        delete parsed.ingredients; delete parsed.ingSrc; delete parsed.servings;
+      }
       setResult(parsed);
     } catch (e) {
       setError("解析できませんでした。通信かキーを確認して、もう一度試してください。");
@@ -1021,6 +1218,8 @@ ${JSON.stringify(list)}
   function confirmAdd() {
     if (!result) return;
     const item = { id: nextId.current++, ...result };
+    item.title = (result.title || "").trim() || "（題名なし）"; // 結果画面で題名を直せる
+    if (Array.isArray(item.ingredients)) item.ingredients = item.ingredients.map(g => ({ ...g, have: false }));
     // AIが読み取った/ユーザーが直した「いつ・どこ」を予定フィールドに確定
     if (result.category==="event"||result.category==="task") {
       if (resultDate) item.date = resultDate;
@@ -1057,6 +1256,192 @@ ${JSON.stringify(list)}
     setItems(prev => prev.filter(it => it.id !== id));
     setMenuId(null);
   }
+
+  // ── レシピの材料 ──
+  function openRecipe(id) {
+    setRecipeId(id); setIngMsg(""); setIngEdit(false); setIngAdd(""); setIngPaste(null); setMenuId(null);
+  }
+  function updateIng(id, fn) {
+    setItems(prev => prev.map(x => x.id === id ? { ...x, ingredients: fn(x.ingredients || []) } : x));
+  }
+  function addIng(id) {
+    if (!ingAdd.trim()) return;
+    const g = splitIngLine(ingAdd);
+    updateIng(id, arr => [...arr, { ...g, have: false }]);
+    setIngAdd("");
+  }
+  // 材料だけを読み取り直す。mode: screen=材料が映った画面のスクショ / text=貼った文章 / page=元のページ / guess=料理名から推定
+  async function readIngredients(id, mode, payload) {
+    const it = (items || []).find(x => x.id === id);
+    if (!it) return;
+    if (!apiKey) { setIngMsg("先に右上の⚙からAPIキーを設定してください。"); return; }
+    setIngBusy(true); setIngMsg("");
+    try {
+      const content = [];
+      let srcText = "";
+      if (mode === "screen") {
+        for (const im of payload) {
+          const m = im.match(/^data:(image\/\w+);base64,(.+)$/);
+          if (m) content.push({ type: "image", source: { type: "base64", media_type: m[1], data: m[2] } });
+        }
+      } else if (mode === "text") {
+        srcText = payload;
+      } else if (mode === "page") {
+        srcText = await fetchPageText(it.sourceUrl);
+        if (!srcText) { setIngMsg("ページを読めませんでした（ログインが必要・読み込み制限など）。材料が映った画面のスクショか、文章を貼って読み取ってください。"); return; }
+      }
+      const dish = [it.title, it.meta].filter(Boolean).join(" / ");
+      const how = mode === "guess"
+        ? `料理「${dish}」の一般的な材料と目安量を出してください。推定なので、その料理の基本的な材料と調味料に絞る。料理名が特定できない場合は ingredients を空配列にする。`
+        : mode === "screen"
+        ? `添付画像（料理動画やレシピのスクショ）に**写っている材料だけ**を、分量も画面の表記どおり読み取ってください（調味料・「適量」「少々」も含める）。料理は「${dish}」。画像が複数なら全部合わせて1つのリストに。材料が写っていなければ ingredients を空配列にする（推測で足さない）。`
+        : `次の文章に**書いてある材料だけ**を、分量も原文どおり抜き出してください（調味料・「適量」「少々」も含める）。料理は「${dish}」。材料が書いていなければ ingredients を空配列にする（推測で足さない）。\n"""${String(srcText).slice(0, 8000)}"""`;
+      content.push({ type: "text", text: `${how}\n以下のJSONだけを返してください。前置き・コードブロック不要:\n{"ingredients":[{"name":"材料名","qty":"分量(なければ空文字)"}],"servings":"何人分(分かれば。なければ空文字)"}` });
+      let data = await callClaude(mode === "screen" ? IMG_MODEL : model, content, 1500);
+      if (mode === "screen" && data.error && /model/i.test(data.error.message || "")) data = await callClaude(IMG_MODEL_FALLBACK, content, 1500);
+      if (data.error) { setIngMsg("AIエラー: " + (data.error.message || "キーや残高を確認してください")); return; }
+      const raw = data.content.filter(c => c.type === "text").map(c => c.text).join("").replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(raw);
+      const list = normIngredients(parsed.ingredients);
+      if (!list.length) {
+        setIngMsg(mode === "guess" ? "料理名が分からず、材料を出せませんでした。題名を料理名に直してから、もう一度試してください。"
+          : mode === "screen" ? "画像の中に材料が見つかりませんでした。材料の一覧が映っている場面をスクショしてください。"
+          : "文章の中に材料が見つかりませんでした。");
+        return;
+      }
+      setItems(prev => prev.map(x => x.id === id
+        ? { ...x, ingredients: list.map(g => ({ ...g, have: false })), ingSrc: mode, servings: String(parsed.servings || x.servings || "").slice(0, 20) }
+        : x));
+      setIngPaste(null); setIngEdit(false);
+      setIngMsg(`${list.length}品を読み取りました（${ING_SRC[mode].label}）。`);
+    } catch (e) {
+      setIngMsg("読み取れませんでした。通信かキーを確認して、もう一度試してください。");
+    } finally {
+      setIngBusy(false);
+    }
+  }
+  async function onIngImages(e, id) {
+    const files = Array.from(e.target.files || []).slice(0, 3);
+    e.target.value = "";
+    if (!files.length) return;
+    try {
+      const imgs = [];
+      // 材料表の小さい字を読むので、保存用(600px)より大きく・高画質で送る
+      for (const f of files) imgs.push(await compressImage(await blobToDataUrl(f), 1400, 0.75));
+      readIngredients(id, "screen", imgs);
+    } catch (err) { setIngMsg("画像を読み込めませんでした。別の画像で試してください。"); }
+  }
+  // 文章を共有シート（iPhone＝メモ・LINEなど）へ。共有が無い端末はクリップボードにコピー。結果は setMsg で画面に出す
+  async function shareOrCopy(text, setMsg) {
+    if (navigator.share) {
+      try { await navigator.share({ text }); return; }
+      catch (e) { if (e && e.name === "AbortError") return; } // 共有シートを閉じただけ＝何もしない
+    }
+    try { await navigator.clipboard.writeText(text); setMsg("コピーしました。メモやLINEに貼り付けできます。"); return; }
+    catch (e) { /* 許可が無い端末は下の旧方式で */ }
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) {}
+    ta.remove();
+    setMsg(ok ? "コピーしました。メモやLINEに貼り付けできます。" : "コピーできませんでした（この端末では許可されていないようです）。");
+  }
+  // 買うもの（まだ丸を付けていない材料）を送る
+  function shareIngredients(it) {
+    const need = (it.ingredients || []).filter(g => !g.have);
+    const head = `■ ${it.title}${it.servings ? `（${it.servings}）` : ""}${it.ingSrc === "guess" ? "［材料は推定］" : ""}`;
+    shareOrCopy([head, ...need.map(g => `・${g.name}${g.qty ? " " + g.qty : ""}`)].join("\n"), setIngMsg);
+  }
+  // 作る日（＝カレンダーに出る）。空にするとカレンダーから外す
+  function setRecipeDate(id, d) {
+    setItems(prev => prev.map(x => {
+      if (x.id !== id) return x;
+      const n = { ...x };
+      if (d) n.date = d; else delete n.date;
+      return n;
+    }));
+  }
+  // 今週の買い物リスト：寄せた行の丸＝元の全レシピの材料に同じ丸を付ける（各レシピの材料シートと同期）
+  function toggleShopRow(row) {
+    const next = !row.have;
+    setItems(prev => prev.map(x => {
+      const mine = row.refs.filter(ref => ref.id === x.id);
+      if (!mine.length) return x;
+      return { ...x, ingredients: (x.ingredients || []).map((g, i) => mine.some(ref => ref.idx === i) ? { ...g, have: next } : g) };
+    }));
+  }
+  function shareShopList(recipes, rows) {
+    const need = rows.filter(r => !r.have);
+    const end = new Date(today); end.setDate(end.getDate() + 6);
+    const lines = [
+      `■ 今週の買い物（${today.getMonth()+1}/${today.getDate()}〜${end.getMonth()+1}/${end.getDate()}）`,
+      `（${recipes.map(r => r.title).join("・")}）`,
+      ...need.map(r => `・${r.name}${r.qty ? " " + r.qty : ""}${r.guess ? "（推定）" : ""}`),
+    ];
+    if (need.some(r => r.guess)) lines.push("※（推定）＝料理名から出した目安の材料");
+    shareOrCopy(lines.join("\n"), setShopMsg);
+  }
+  function openShop() { setShopOpen(true); setShopMsg(""); setShopOnlyNeed(false); }
+
+  // ── 題名・写真の編集 ──
+  function openEdit(it) {
+    setEditId(it.id); setEditTitle(it.title || ""); setEditCover(it.cover || null);
+    setEditPos(it.coverPos || { x: 50, y: 50, z: 1 }); setEditFrames(false); setEditMsg(""); setMenuId(null);
+  }
+  // 「内容不明」で入ってしまったYouTubeカードの救済：公式oEmbedから題名、公式サムネから写真を取り直す（AI・キー不要）
+  async function refetchYt(it) {
+    const id = ytOf(it);
+    if (!id) return;
+    setEditBusy(true); setEditMsg("");
+    try {
+      const y = await fetchYouTube(id);
+      const th = await ytCardThumb(id);
+      setEditCover(th); setEditPos({ x: 50, y: 50, z: 1 });
+      if (y.meta && y.meta.title) { setEditTitle(y.meta.title.slice(0, 80)); setEditMsg(`YouTubeの題名とサムネを入れました${y.meta.author ? `（${y.meta.author}）` : ""}。長ければ短く直して「保存する」を押してください。`); }
+      else setEditMsg("動画の題名は取れませんでした（非公開・削除などの可能性）。サムネだけ入れました。");
+    } catch (e) {
+      setEditMsg("取り直せませんでした。通信を確認して、もう一度試してください。");
+    } finally { setEditBusy(false); }
+  }
+  function saveEdit() {
+    const t = editTitle.trim();
+    if (!t) return;
+    setItems(prev => prev.map(x => {
+      if (x.id !== editId) return x;
+      const n = { ...x };
+      if (t !== x.title) { if (!n.origTitle) n.origTitle = x.title; n.title = t; }
+      if (editCover) n.cover = editCover; else delete n.cover;
+      const p = editPos;
+      if (p.x === 50 && p.y === 50 && (p.z || 1) === 1) delete n.coverPos; else n.coverPos = p;
+      return n;
+    }));
+    setEditId(null);
+  }
+  async function pickCover(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      setEditCover(await compressImage(await blobToDataUrl(file), 900, 0.6));
+      setEditPos({ x: 50, y: 50, z: 1 });
+    } catch (err) { alert("写真を読み込めませんでした。別の写真で試してください。"); }
+  }
+  // 写真の位置合わせ（ドラッグ）。指を右へ動かす＝写真の左側が見える
+  function coverDragStart(e) {
+    const r = e.currentTarget.getBoundingClientRect();
+    dragRef.current = { sx: e.clientX, sy: e.clientY, x: editPos.x, y: editPos.y, w: r.width, h: r.height };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+  function coverDragMove(e) {
+    const d = dragRef.current;
+    if (!d) return;
+    const k = 1 / (editPos.z || 1);
+    const nx = Math.max(0, Math.min(100, d.x - (e.clientX - d.sx) / d.w * 100 * k));
+    const ny = Math.max(0, Math.min(100, d.y - (e.clientY - d.sy) / d.h * 100 * k));
+    setEditPos(p => ({ ...p, x: Math.round(nx), y: Math.round(ny) }));
+  }
+  function coverDragEnd() { dragRef.current = null; }
 
   const catOrder = Object.keys(CATS);
   const visible = (() => {
@@ -1144,9 +1529,25 @@ ${JSON.stringify(list)}
               const wd = ["日","月","火","水","木","金","土"][new Date(selDay+"T00:00").getDay()];
               const dayItems = (items || []).filter(it => it.date===selDay)
                                  .sort((a,b) => (a.done?1:0)-(b.done?1:0) || (a.time||"99:99").localeCompare(b.time||"99:99"));
-              const dayPhotos = (items || []).filter(it => (it._img || it.image) && it.added===selDay);
+              const dayPhotos = (items || []).filter(it => coverOf(it) && it.added===selDay);
+              // 今週の買い物＝作る日を入れたレシピの材料が自動で集まる（ReciMe型：献立→買い物リストが勝手にできる）。
+              // 下タブは増やさず、毎日見るカレンダーの所に「今週ある時だけ」出す
+              const wk = weekRecipes(items, today);
+              const wkRows = wk.length ? buildShopRows(wk) : [];
+              const wkNeed = wkRows.filter(r => !r.have).length;
+              const wkLabel = !wkRows.length ? "材料がまだありません" : wkNeed ? `${wkNeed}品` : "そろっています";
               return (
                 <React.Fragment>
+                  {wk.length > 0 && (
+                    <div style={S.shopBanner} onClick={openShop}>
+                      <span style={S.shopBannerIcon}>🧺</span>
+                      <span style={{flex:1, minWidth:0}}>
+                        <span style={S.shopBannerTitle}>今週の買い物 {wkLabel}</span>
+                        <span style={S.shopBannerSub}>{wk.map(r => `${mdw(r.date).replace(/（.）/, "")} ${r.title}`).join("・")}</span>
+                      </span>
+                      <span style={S.shopBannerChev}>›</span>
+                    </div>
+                  )}
                   <div style={S.agendaHead}>
                     <span style={S.agendaDate}>{`${+sm}月${+sd}日（${wd}）`}{selDay===toDateStr(today) && <span style={S.agendaToday}>今日</span>}</span>
                     <span style={S.addDayBtn} onClick={()=>{ setAddDay(selDay); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddType("event"); setAddRemind("none"); }}>＋ 予定・タスク</span>
@@ -1165,6 +1566,11 @@ ${JSON.stringify(list)}
                             <div style={{minWidth:0, flex:1}}>
                               <div style={{...S.calEvTitle, ...(it.done?S.taskTitleDone:{})}}>{it.remind?"🔔 ":""}{it.title}</div>
                               {it.meta && <div style={S.calEvMeta}>{it.meta}</div>}
+                              {it.category === "recipe" && (
+                                <span style={S.calEvIng} onClick={e=>{e.stopPropagation(); openRecipe(it.id);}}>
+                                  🧺 材料{(it.ingredients||[]).length ? ` ${it.ingredients.length}品` : "を出す"}
+                                </span>
+                              )}
                               {it.place && (
                                 <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(it.place)}`} target="_blank" rel="noopener noreferrer" style={S.calEvPlace} onClick={e=>e.stopPropagation()}>📍 {it.place}</a>
                               )}
@@ -1201,8 +1607,8 @@ ${JSON.stringify(list)}
                       <div style={S.albumHead}>🖼 この日のアルバム<span style={S.albumCount}>{dayPhotos.length}</span></div>
                       <div style={S.albumStrip}>
                         {dayPhotos.map(it => (
-                          <div key={it.id} style={S.albumThumbWrap} onClick={()=>setLightbox(it._img || it.image)}>
-                            <img src={it._img || it.image} alt="" style={S.albumThumb} />
+                          <div key={it.id} style={S.albumThumbWrap} onClick={()=>setLightbox(coverOf(it))}>
+                            <img src={coverOf(it)} alt="" style={S.albumThumb} />
                             {it.geo && it.geo.place && (
                               <span style={S.albumPlace} onClick={e=>{e.stopPropagation(); window.open(`https://www.google.com/maps?q=${it.geo.lat},${it.geo.lng}`,"_blank");}}>📍{it.geo.place}</span>
                             )}
@@ -1334,7 +1740,7 @@ ${JSON.stringify(list)}
             </div>
           ) : visible.map((it)=>{
             const c = CATS[it.category];
-            const heroImg = it._img || it.image;
+            const heroImg = coverOf(it);
             return (
               <div key={it.id} style={S.card}>
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
@@ -1344,7 +1750,7 @@ ${JSON.stringify(list)}
                       調べる先(sourceUrl)が無い画像はタップしても何も起きないので、その場合だけ拡大に落とす */}
                   <div style={{...S.hero, ...(heroImg?{}:{background:c.grad}), ...(heroImg?{cursor:"pointer"}:{})}}
                     onClick={e => { if(!heroImg) return; if(it.sourceUrl){ handleImageSearch(e,it); } else { e.stopPropagation(); setLightbox(heroImg); } }}>
-                    {heroImg && <img src={heroImg} alt="" style={S.cardHeroImg} onError={e=>{e.target.style.display='none';}} />}
+                    {heroImg && <img src={heroImg} alt="" style={{...S.cardHeroImg, ...coverFx(it.coverPos)}} onError={e=>{e.target.style.display='none';}} />}
                     {!heroImg && <span style={S.heroGlow}/>}
                     <span style={S.cardCat}>{c.label}</span>
                     {heroImg && scanning !== it.id && (
@@ -1356,6 +1762,11 @@ ${JSON.stringify(list)}
                     <div style={S.cardTitle}>{it.title}</div>
                     {it.meta && <div style={S.cardMeta}>{it.meta}</div>}
                     {it.chip && <span style={{...S.cardChip, background:c.chip, color:c.chipC}}>{it.chip}</span>}
+                    {it.category === "recipe" && (
+                      <div style={S.cardIngBtn} onClick={e=>{e.stopPropagation(); openRecipe(it.id);}}>
+                        🧺 {(it.ingredients||[]).length ? `材料 ${it.ingredients.length}品${it.ingSrc==="guess"?"（推定）":""}` : "材料を出す"}
+                      </div>
+                    )}
                     {it.category === "basho" && (
                       <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent([it.title, it.meta].filter(Boolean).join(" "))}`}
                          target="_blank" rel="noopener noreferrer"
@@ -1379,7 +1790,7 @@ ${JSON.stringify(list)}
                     {/* 画像から"調べる"はタップ検索を独立ボタン化（画像タップは拡大に譲った） */}
                     {heroImg && it.sourceUrl && (
                       <div style={S.cardSearchBtn} onClick={e=>{e.stopPropagation(); handleImageSearch(e,it);}}>
-                        🔍 {it.searchLabel || "調べる"}
+                        {ytOf(it) ? "▶ 動画を見る" : `🔍 ${it.searchLabel || "調べる"}`}
                       </div>
                     )}
                     {it.added && <div style={S.cardDate}>📥 {(()=>{const p=it.added.split("-");return `${+p[1]}/${+p[2]}`;})()}</div>}
@@ -1388,6 +1799,8 @@ ${JSON.stringify(list)}
                 {menuId===it.id && (
                   <div style={S.menu} onClick={e=>e.stopPropagation()}>
                     <div style={S.menuClose} onClick={()=>setMenuId(null)}>✕</div>
+                    <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openEdit(it)}>✎ 題名・写真を編集</div>
+                    {it.category === "recipe" && <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openRecipe(it.id)}>🧺 材料を見る</div>}
                     <div style={S.menuHint}>分類を変える</div>
                     {Object.entries(CATS).map(([k,v])=>(
                       <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
@@ -1416,14 +1829,14 @@ ${JSON.stringify(list)}
                   {nonEmpty.map(k => {
                     const c = CATS[k];
                     const list = (items||[]).filter(it => it.category===k);
-                    const photos = list.filter(it => it._img || it.image).slice(0,4);
+                    const photos = list.filter(it => coverOf(it)).slice(0,4);
                     const tiles = Array.from({length:4}, (_,i) => photos[i] || null);
                     return (
                       <div key={k} style={S.catCard} onClick={()=>{ setFilter(k); setView("cards"); }}>
                         <div style={S.catCover}>
                           <div style={S.catCoverInner}>
                             {tiles.map((t,i) => t
-                              ? <img key={i} src={t._img||t.image} alt="" style={S.catCoverImg} onError={e=>{e.target.style.visibility='hidden';}} />
+                              ? <img key={i} src={coverOf(t)} alt="" style={S.catCoverImg} onError={e=>{e.target.style.visibility='hidden';}} />
                               : <div key={i} style={{...S.catCoverTile, background:c.grad, opacity:[0.92,0.78,0.85,0.72][i]}} />
                             )}
                           </div>
@@ -1447,15 +1860,15 @@ ${JSON.stringify(list)}
         {view==="album" && (
           <div style={S.albumGridWrap}>
             {(() => {
-              const photos = (items||[]).filter(it => it._img || it.image);
+              const photos = (items||[]).filter(it => coverOf(it));
               if (photos.length===0) return (
                 <div style={S.wallEmpty}><div style={S.wallEmptyEmoji}>🖼️</div><div style={S.wallEmptyTitle}>写真はまだない</div><div style={S.wallEmptyText}>スクショや写真を放り込むと、ここにアルバムとして並びます。</div></div>
               );
               return (
                 <div style={S.albumGrid}>
                   {photos.map(it => (
-                    <div key={it.id} style={S.albumCell} onClick={()=>setLightbox(it._img||it.image)}>
-                      <img src={it._img||it.image} alt="" style={S.albumCellImg} onError={e=>{e.target.style.display='none';}} />
+                    <div key={it.id} style={S.albumCell} onClick={()=>setLightbox(coverOf(it))}>
+                      <img src={coverOf(it)} alt="" style={S.albumCellImg} onError={e=>{e.target.style.display='none';}} />
                       {it.geo && it.geo.place && <span style={S.albumCellPlace}>📍{it.geo.place}</span>}
                     </div>
                   ))}
@@ -1626,7 +2039,7 @@ ${JSON.stringify(list)}
                 const it = (items || []).find(x => x.id === id);
                 if (!it) return null;
                 const c = CATS[it.category] || CATS.joho;
-                const thumb = it._img || it.image;
+                const thumb = coverOf(it);
                 return (
                   <div key={id} style={S.hitCard}>
                     {thumb
@@ -1760,11 +2173,32 @@ ${JSON.stringify(list)}
                       <span style={S.cardCat}>{CATS[result.category].label}</span>
                     </div>
                     <div style={{padding:"14px 16px 16px"}}>
-                      <div style={S.cardTitle}>{result.title}</div>
+                      <input style={S.resultTitleInput} value={result.title || ""} maxLength={80} aria-label="題名"
+                        onChange={e=>setResult({...result, title:e.target.value})} />
+                      <div style={S.resultTitleHint}>✎ 題名はタップして直せます</div>
                       {result.meta && <div style={S.cardMeta}>{result.meta}</div>}
                       {result.chip && <span style={{...S.cardChip, background:CATS[result.category].chip, color:CATS[result.category].chipC}}>{result.chip}</span>}
                     </div>
                   </div>
+                  {error && <div style={{...S.error, marginTop:0, marginBottom:12}}>{error}</div>}
+                  {result.category==="recipe" && (() => {
+                    const ings = result.ingredients || [];
+                    const src = ING_SRC[result.ingSrc];
+                    return (
+                      <div style={S.ingPreview}>
+                        <div style={S.ingPreviewHead}>
+                          材料{result.servings ? `（${result.servings}）` : ""}{ings.length ? ` ${ings.length}品` : ""}
+                          {src && ings.length>0 && <span style={{...S.ingBadge, color:src.color, background:src.bg}}>{src.label}</span>}
+                        </div>
+                        {ings.length
+                          ? <div style={S.ingPreviewList}>{ings.slice(0,8).map(g=>g.name+(g.qty?` ${g.qty}`:"")).join("・")}{ings.length>8?` ほか${ings.length-8}品`:""}</div>
+                          : <div style={S.ingPreviewList}>材料は見つかりませんでした。箱に入れた後、カードの「材料を出す」から、材料が映った画面のスクショなどで読み取れます。</div>}
+                        {result.ingSrc==="guess" && ings.length>0 && (
+                          <div style={{...S.ingWarn, marginTop:8, marginBottom:0}}>動画やページに書いてあった材料ではなく、料理名から出した一般的な材料です。箱に入れた後、材料が映った場面のスクショで正確にできます。</div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {(result.category==="event"||result.category==="task") && (
                     <>
                       <div style={S.fieldLabel}>
@@ -1830,6 +2264,262 @@ ${JSON.stringify(list)}
             </div>
           </div>
         )}
+
+        {/* 今週の買い物リスト：今日から7日間に作るレシピの材料を1枚に。丸は各レシピの材料シートと同期（材料シートはこの上に重なる） */}
+        {shopOpen && (() => {
+          const recipes = weekRecipes(items, today);
+          const rows = buildShopRows(recipes);
+          const need = rows.filter(r => !r.have).length;
+          const shown = shopOnlyNeed ? rows.filter(r => !r.have) : rows;
+          const noIng = recipes.filter(r => !(r.ingredients || []).length);
+          const end = new Date(today); end.setDate(end.getDate() + 6);
+          return (
+            <div style={S.sheetWrap} onClick={()=>setShopOpen(false)}>
+              <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+                <div style={S.sheetGrip}/>
+                <div style={S.sheetTitle}>今週の買い物</div>
+                <div style={S.sheetSub}>{mdw(toDateStr(today))}〜{mdw(toDateStr(end))}に作るレシピの材料をまとめました。同じ材料は1行に寄せ、分量は足し算せずに並べています。</div>
+                {recipes.length === 0 ? (
+                  <div style={S.ingEmpty}>今日から7日間に作るレシピがありません。レシピの「材料」を開いて「作る日」を入れると、ここに材料が集まります。</div>
+                ) : (
+                  <>
+                    <div style={S.shopRecipes}>
+                      {recipes.map(r => (
+                        <div key={r.id} style={S.shopRecipeChip} onClick={()=>openRecipe(r.id)}>
+                          <span style={S.shopRecipeDate}>{mdw(r.date)}</span>
+                          <span style={S.shopRecipeName}>{r.title}</span>
+                          {r.ingSrc === "guess" && (r.ingredients||[]).length > 0 && <span style={{...S.ingBadge, color:ING_SRC.guess.color, background:ING_SRC.guess.bg, padding:"1px 6px", fontSize:9.5}}>推定</span>}
+                          <span style={S.shopRecipeChev}>›</span>
+                        </div>
+                      ))}
+                    </div>
+                    {noIng.length > 0 && (
+                      <div style={S.ingWarn}>材料がまだ無いレシピ：{noIng.map(r => r.title).join("・")}。上の名前をタップして材料を出すと、ここに入ります。</div>
+                    )}
+                    {rows.length > 0 && (
+                      <>
+                        <div style={S.ingHeadRow}>
+                          <span style={S.ingHeadTitle}>買うもの {need}品 <span style={{fontSize:11, fontWeight:600, color:"#a0a0ae"}}>／全{rows.length}品</span></span>
+                          <span style={{...S.ingEditToggle, ...(shopOnlyNeed?{color:"#16161e"}:{})}} onClick={()=>setShopOnlyNeed(!shopOnlyNeed)}>{shopOnlyNeed ? "全部を表示" : "買うものだけ"}</span>
+                        </div>
+                        <div style={S.ingList}>
+                          {shown.length === 0 && <div style={{...S.ingEmpty, borderRadius:0}}>買うものは全部そろっています。</div>}
+                          {shown.map((r, i) => (
+                            <div key={r.key} style={{...S.ingRow, alignItems:"flex-start", ...(i===0?{borderTop:"none"}:{})}} onClick={()=>toggleShopRow(r)}>
+                              <span style={{...S.ingCheck, marginTop:1, ...(r.have?S.ingCheckOn:{})}}>{r.have ? "✓" : ""}</span>
+                              <span style={{flex:1, minWidth:0}}>
+                                <span style={{...S.ingName, display:"block", ...(r.have?S.ingDone:{})}}>
+                                  {r.name}
+                                  {r.guess && <span style={{...S.ingBadge, color:ING_SRC.guess.color, background:ING_SRC.guess.bg, padding:"1px 6px", fontSize:9.5, marginLeft:6}}>推定</span>}
+                                </span>
+                                {recipes.length > 1 && <span style={S.shopFrom}>{r.titles.join("・")}</span>}
+                              </span>
+                              <span style={{...S.ingQty, ...(r.have?S.ingDone:{})}}>{r.qty}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={S.ingHint}>丸をタップ＝家にある・買った（各レシピの材料にも同じ丸が付きます）</div>
+                        <button style={{...S.btnMain, width:"100%", flex:"none", marginTop:12, ...(need?{}:{opacity:0.5})}} disabled={!need} onClick={()=>shareShopList(recipes, rows)}>
+                          {need ? `買うものを送る・コピー（${need}品）` : "全部そろっています"}
+                        </button>
+                      </>
+                    )}
+                    {shopMsg && <div style={S.ingMsg}>{shopMsg}</div>}
+                  </>
+                )}
+                <div style={S.sheetBtns}>
+                  <button style={S.btnGhost} onClick={()=>setShopOpen(false)}>閉じる</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* レシピの材料シート：材料の一覧（家にある物に丸）→ 買うものを送る／材料の読み取り直し */}
+        {recipeId && (() => {
+          const it = (items || []).find(x => x.id === recipeId);
+          if (!it) return null;
+          const ings = it.ingredients || [];
+          const need = ings.filter(g => !g.have).length;
+          const src = ING_SRC[it.ingSrc];
+          const img = coverOf(it);
+          const ytId = ytOf(it);
+          return (
+            <div style={S.sheetWrap} onClick={()=>!ingBusy && setRecipeId(null)}>
+              <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+                <div style={S.sheetGrip}/>
+                <div style={{...S.recipeHero, ...(img?{}:{background:CATS.recipe.grad})}}>
+                  {img && <img src={img} alt="" style={{...S.previewImg, ...coverFx(it.coverPos)}} onError={e=>{e.target.style.display='none';}} />}
+                  <span style={S.cardCat}>レシピ</span>
+                  <span style={S.recipeEditBtn} onClick={()=>openEdit(it)}>✎ 題名・写真</span>
+                </div>
+                <div style={S.recipeTitle}>{it.title}</div>
+                {it.meta && <div style={S.cardMeta}>{it.meta}</div>}
+                {it.sourceUrl && !it.searchLabel && (
+                  <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer" style={S.recipeSrcLink}>{ytId ? "▶ YouTubeで見る" : "🔗 元のページを開く"}</a>
+                )}
+
+                {/* 作る日＝カレンダーに出る（興味→予定）。今日から7日間なら今週の買い物リストに材料が集まる */}
+                <div style={S.cookRow}>
+                  <span style={S.cookLabel}>📅 作る日</span>
+                  <input type="date" style={S.cookDate} value={it.date || ""} aria-label="作る日"
+                    onChange={e=>setRecipeDate(it.id, e.target.value)} />
+                  {it.date && <span style={S.cookClear} onClick={()=>setRecipeDate(it.id, "")}>外す</span>}
+                </div>
+                {it.date && (() => {
+                  const inWeek = weekRecipes([it], today).length > 0;
+                  const past = it.date < toDateStr(today);
+                  return (
+                    <div style={S.cookNote}>
+                      {mdw(it.date)}に作る予定です（カレンダーに出ます）。
+                      {inWeek
+                        ? <span style={S.cookLink} onClick={()=>{ setRecipeId(null); openShop(); }}>今週の買い物リストを見る ›</span>
+                        : past
+                        ? <span>この日はもう過ぎています。</span>
+                        : <span>今日から7日以内になると、今週の買い物リストに材料が入ります。</span>}
+                    </div>
+                  );
+                })()}
+
+                <div style={S.ingHeadRow}>
+                  <span style={S.ingHeadTitle}>材料{it.servings ? `（${it.servings}）` : ""}</span>
+                  {src && ings.length>0 && <span style={{...S.ingBadge, color:src.color, background:src.bg}}>{src.label}</span>}
+                  {ings.length>0 && <span style={S.ingEditToggle} onClick={()=>setIngEdit(!ingEdit)}>{ingEdit ? "完了" : "編集"}</span>}
+                </div>
+                {it.ingSrc==="guess" && ings.length>0 && (
+                  <div style={S.ingWarn}>動画やページに書いてあった材料ではなく、料理名から出した<b>一般的な材料（目安）</b>です。正確にしたいときは、材料が映った場面をスクショして下の「画面のスクショから」で読み取ってください。</div>
+                )}
+                {ings.length===0
+                  ? <div style={S.ingEmpty}>まだ材料がありません。下のボタンで読み取れます。</div>
+                  : (
+                    <div style={S.ingList}>
+                      {ings.map((g,i)=>(
+                        <div key={i} style={{...S.ingRow, ...(i===0?{borderTop:"none"}:{})}}
+                          onClick={()=>{ if(!ingEdit) updateIng(it.id, arr => arr.map((x,j)=> j===i ? {...x, have:!x.have} : x)); }}>
+                          <span style={{...S.ingCheck, ...(g.have?S.ingCheckOn:{})}}>{g.have ? "✓" : ""}</span>
+                          <span style={{...S.ingName, ...(g.have?S.ingDone:{})}}>{g.name}</span>
+                          <span style={{...S.ingQty, ...(g.have?S.ingDone:{})}}>{g.qty}</span>
+                          {ingEdit && <span style={S.ingDel} onClick={e=>{e.stopPropagation(); updateIng(it.id, arr => arr.filter((_,j)=>j!==i));}}>✕</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                {ings.length>0 && <div style={S.ingHint}>丸をタップ＝家にある・買った（送るリストから外れます）</div>}
+                <div style={S.ingAddRow}>
+                  <input style={S.ingAddInput} placeholder="＋ 材料を足す（例：豚バラ 200g）" value={ingAdd}
+                    onChange={e=>setIngAdd(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") addIng(it.id); }} />
+                  <span style={{...S.ingAddBtn, ...(ingAdd.trim()?{}:{opacity:0.4})}} onClick={()=>addIng(it.id)}>追加</span>
+                </div>
+                {ings.length>0 && (
+                  <button style={{...S.btnMain, width:"100%", flex:"none", marginTop:12, ...(need?{}:{opacity:0.5})}} disabled={!need} onClick={()=>shareIngredients(it)}>
+                    {need ? `買うものを送る・コピー（${need}品）` : "全部そろっています"}
+                  </button>
+                )}
+                {ingMsg && <div style={S.ingMsg}>{ingMsg}</div>}
+
+                <div style={S.ingReadHead}>{ings.length ? "材料を読み取り直す" : "材料を読み取る"}</div>
+                <div style={S.ingReadGrid}>
+                  <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) ingImgRef.current?.click(); }}>
+                    📷 画面のスクショから<span style={S.ingReadSub}>材料が映った場面（3枚まで）</span>
+                  </div>
+                  <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{}), ...(ingPaste!==null?{borderColor:"#16161e"}:{})}} onClick={()=>{ if(!ingBusy) setIngPaste(ingPaste===null ? "" : null); }}>
+                    📝 文章を貼って<span style={S.ingReadSub}>概要欄・メモなど</span>
+                  </div>
+                  {it.sourceUrl && !ytId && !it.searchLabel && (
+                    <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) readIngredients(it.id, "page"); }}>
+                      🔗 ページから<span style={S.ingReadSub}>元のページを読む</span>
+                    </div>
+                  )}
+                  <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) readIngredients(it.id, "guess"); }}>
+                    💡 料理名から推定<span style={S.ingReadSub}>一般的な材料（目安）</span>
+                  </div>
+                </div>
+                {ingPaste !== null && (
+                  <>
+                    <textarea style={{...S.textarea, minHeight:90, marginTop:8}} placeholder="YouTubeの概要欄やレシピの文章を貼り付け"
+                      value={ingPaste} onChange={e=>setIngPaste(e.target.value)} disabled={ingBusy} />
+                    <button style={{...S.btnMain, width:"100%", flex:"none", marginTop:8, ...(!ingPaste.trim()||ingBusy?{opacity:0.5}:{})}}
+                      disabled={!ingPaste.trim()||ingBusy} onClick={()=>readIngredients(it.id, "text", ingPaste)}>この文章から読み取る</button>
+                  </>
+                )}
+                {ingBusy && <div style={S.ingBusy}>AIが材料を読み取り中…</div>}
+                <input ref={ingImgRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>onIngImages(e, it.id)} />
+                <div style={S.sheetBtns}>
+                  <button style={S.btnGhost} onClick={()=>setRecipeId(null)} disabled={ingBusy}>閉じる</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* 題名・写真の編集シート（材料シートの上に重なる） */}
+        {editId && (() => {
+          const it = (items || []).find(x => x.id === editId);
+          if (!it) return null;
+          const orig = it._img || it.image || "";
+          const shown = editCover === "none" ? "" : (editCover || orig);
+          const ytId = ytOf(it);
+          const frames = [["maxresdefault","サムネ"],["maxres1","場面1"],["maxres2","場面2"],["maxres3","場面3"]];
+          return (
+            <div style={S.sheetWrap} onClick={()=>!editBusy && setEditId(null)}>
+              <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+                <div style={S.sheetGrip}/>
+                <div style={S.sheetTitle}>題名・写真を編集</div>
+                <div style={S.fieldLabel}>題名</div>
+                <textarea style={{...S.textarea, minHeight:64}} value={editTitle} maxLength={80} onChange={e=>setEditTitle(e.target.value)} />
+                {it.origTitle && editTitle !== it.origTitle && (
+                  <div style={S.revertLink} onClick={()=>setEditTitle(it.origTitle)}>↺ 元の題名に戻す（{it.origTitle.length > 22 ? it.origTitle.slice(0,22) + "…" : it.origTitle}）</div>
+                )}
+                <div style={S.fieldLabel}>写真（カードではこう見えます）</div>
+                <div style={{...S.coverBox, ...(shown?{}:{background:(CATS[it.category]||CATS.joho).grad, cursor:"default"})}}
+                  onPointerDown={shown ? coverDragStart : undefined} onPointerMove={shown ? coverDragMove : undefined}
+                  onPointerUp={coverDragEnd} onPointerCancel={coverDragEnd}>
+                  {shown
+                    ? <img src={shown} alt="" draggable={false} style={{...S.previewImg, ...coverFx(editPos), pointerEvents:"none"}} onError={e=>{e.target.style.display='none';}} />
+                    : <span style={S.coverNone}>写真なし（色のカードになります）</span>}
+                </div>
+                {shown && <div style={S.coverHint}>写真をドラッグで位置合わせ・下のつまみで拡大</div>}
+                {shown && (
+                  <input type="range" min="1" max="3" step="0.05" value={editPos.z || 1} aria-label="拡大"
+                    onChange={e=>setEditPos(p=>({...p, z:+e.target.value}))} style={S.coverZoom} />
+                )}
+                <div style={S.coverBtns}>
+                  <div style={S.coverBtn} onClick={()=>coverFileRef.current?.click()}>🖼 写真を選ぶ</div>
+                  {ytId && <div style={{...S.coverBtn, ...(editFrames?S.coverBtnOn:{})}} onClick={()=>setEditFrames(!editFrames)}>🎬 動画の場面から</div>}
+                  {editCover !== null && <div style={S.coverBtn} onClick={()=>{ setEditCover(null); setEditPos({x:50,y:50,z:1}); }}>↺ 元の写真</div>}
+                  {shown && <div style={S.coverBtn} onClick={()=>setEditCover("none")}>写真なし</div>}
+                  {(shown && (editPos.x!==50 || editPos.y!==50 || (editPos.z||1)!==1)) && <div style={S.coverBtn} onClick={()=>setEditPos({x:50,y:50,z:1})}>位置を戻す</div>}
+                </div>
+                {editFrames && ytId && (
+                  <div style={S.frameGrid}>
+                    {frames.map(([n, label]) => {
+                      const on = editCover && (editCover.endsWith(`/${n}.jpg`) || editCover.endsWith(`/${YT_FRAME_FALLBACK[n]}.jpg`));
+                      return (
+                        <div key={n} style={{...S.frameCell, ...(on?S.frameCellOn:{})}}
+                          onClick={e=>{ const im = e.currentTarget.querySelector("img"); if (!im || im.style.display==="none") return; setEditCover(im.src); setEditPos({x:50,y:50,z:1}); }}>
+                          <img src={ytThumb(ytId, n)} alt="" style={S.frameImg}
+                            onError={e=>{ const fb = YT_FRAME_FALLBACK[n]; if (!e.target.dataset.fb) { e.target.dataset.fb = "1"; e.target.src = ytThumb(ytId, fb); } else e.target.style.display = "none"; }} />
+                          <span style={S.frameLabel}>{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {ytId && (
+                  <div style={{...S.coverBtn, marginTop:10, textAlign:"center", ...(editBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!editBusy) refetchYt(it); }}>
+                    {editBusy ? "YouTubeから取得中…" : "↻ YouTubeから題名・サムネを取り直す"}
+                  </div>
+                )}
+                {editMsg && <div style={S.ingMsg}>{editMsg}</div>}
+                <input ref={coverFileRef} type="file" accept="image/*" style={{display:"none"}} onChange={pickCover} />
+                <div style={S.sheetBtns}>
+                  <button style={S.btnGhost} onClick={()=>setEditId(null)} disabled={editBusy}>やめる</button>
+                  <button style={{...S.btnMain, ...(editTitle.trim()&&!editBusy?{}:{opacity:0.5})}} disabled={!editTitle.trim()||editBusy} onClick={saveEdit}>保存する ✓</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* 画像ライトボックス */}
         {lightbox && (
@@ -2178,6 +2868,74 @@ const S = {
   attXSm: { fontSize:9.5, color:"#bcbcc8", fontWeight:700, padding:"0 1px" },
   attPin: { fontSize:14, color:"#a0a0b0", cursor:"pointer", padding:"2px 4px", flexShrink:0, alignSelf:"flex-start" },
   help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
+  // ── レシピの材料 ──
+  cardIngBtn: { display:"inline-flex", alignItems:"center", gap:4, marginTop:6, marginRight:5, padding:"4px 10px", borderRadius:8, background:"rgba(255,94,98,0.12)", border:"1px solid rgba(255,94,98,0.25)", color:"#d63f37", fontSize:10.5, fontWeight:800, cursor:"pointer" },
+  recipeHero: { width:"100%", aspectRatio:"3 / 1", borderRadius:16, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:12, boxSizing:"border-box" },
+  recipeEditBtn: { position:"absolute", right:8, top:8, zIndex:2, padding:"6px 11px", borderRadius:100, background:"rgba(12,12,20,0.66)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", color:"#fff", fontSize:11, fontWeight:800, cursor:"pointer" },
+  recipeTitle: { fontSize:16, fontWeight:800, color:"#16161e", lineHeight:1.45, margin:"12px 0 3px", letterSpacing:"-0.01em" },
+  recipeSrcLink: { display:"inline-flex", alignItems:"center", gap:4, marginTop:8, padding:"6px 12px", borderRadius:10, background:"rgba(22,150,216,0.12)", color:"#1279b8", fontSize:12, fontWeight:800, textDecoration:"none" },
+  ingHeadRow: { display:"flex", alignItems:"center", gap:8, margin:"18px 0 8px" },
+  ingHeadTitle: { fontSize:14, fontWeight:800, color:"#16161e" },
+  ingBadge: { fontSize:10.5, fontWeight:800, padding:"3px 9px", borderRadius:100 },
+  ingEditToggle: { marginLeft:"auto", fontSize:12, fontWeight:700, color:"#4a63d8", cursor:"pointer", padding:"4px 2px" },
+  ingWarn: { fontSize:11.5, lineHeight:1.6, color:"#92400e", background:"rgba(245,158,11,0.12)", border:"1px solid rgba(245,158,11,0.3)", borderRadius:12, padding:"9px 11px", marginBottom:8 },
+  ingEmpty: { fontSize:12, color:"#9a9aaa", padding:"14px 12px", borderRadius:12, background:"#f4f4f8", textAlign:"center" },
+  ingList: { background:"#fff", border:"1px solid #ececf2", borderRadius:14, overflow:"hidden" },
+  ingRow: { display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderTop:"1px solid #f2f2f6", cursor:"pointer", userSelect:"none" },
+  ingCheck: { width:20, height:20, flexShrink:0, borderRadius:"50%", border:"1.5px solid #cfcfda", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:900, color:"#fff" },
+  ingCheckOn: { background:"#22c55e", borderColor:"#22c55e" },
+  ingName: { flex:1, minWidth:0, fontSize:13, fontWeight:600, color:"#1a1a24" },
+  ingQty: { fontSize:12.5, fontWeight:600, color:"#6a6a7a", textAlign:"right", maxWidth:"45%" },
+  ingDone: { color:"#b8b8c4", textDecoration:"line-through" },
+  ingDel: { width:24, height:24, flexShrink:0, borderRadius:8, background:"rgba(240,67,108,0.1)", color:"#f0436c", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800 },
+  ingHint: { fontSize:10.5, color:"#a0a0ae", marginTop:6 },
+  ingAddRow: { display:"flex", alignItems:"center", gap:8, marginTop:10 },
+  ingAddInput: { flex:1, minWidth:0, height:42, borderRadius:12, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:13, color:"#1a1a24", outline:"none", boxSizing:"border-box" },
+  ingAddBtn: { height:42, padding:"0 14px", borderRadius:12, background:"#16161e", color:"#fff", display:"flex", alignItems:"center", fontSize:13, fontWeight:700, cursor:"pointer", flexShrink:0 },
+  ingMsg: { fontSize:12, lineHeight:1.6, color:"#4a63d8", background:"#eef2ff", borderRadius:12, padding:"9px 11px", marginTop:10 },
+  ingReadHead: { fontSize:12, fontWeight:800, color:"#888", margin:"20px 0 8px" },
+  ingReadGrid: { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8 },
+  ingReadBtn: { display:"flex", flexDirection:"column", gap:2, padding:"11px 12px", borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", fontSize:12.5, fontWeight:800, color:"#2a2a36", cursor:"pointer", userSelect:"none" },
+  ingReadSub: { fontSize:10, fontWeight:600, color:"#a0a0ae" },
+  ingBusy: { fontSize:12, fontWeight:700, color:"#8b54f5", marginTop:10, textAlign:"center" },
+  ingPreview: { background:"#fff", border:"1px solid #eee", borderRadius:14, padding:"11px 13px", marginBottom:12 },
+  ingPreviewHead: { display:"flex", alignItems:"center", gap:8, fontSize:12.5, fontWeight:800, color:"#16161e", marginBottom:6 },
+  ingPreviewList: { fontSize:12, color:"#4a4a58", lineHeight:1.7 },
+  resultTitleInput: { width:"100%", fontSize:14, fontWeight:700, color:"#1a1a24", lineHeight:1.45, border:"none", borderBottom:"1.5px dashed #d0d0dc", background:"transparent", padding:"2px 0 4px", outline:"none", fontFamily:"inherit", boxSizing:"border-box" },
+  resultTitleHint: { fontSize:10, color:"#a0a0ae", margin:"3px 0 4px" },
+  // ── 作る日・今週の買い物 ──
+  cookRow: { display:"flex", alignItems:"center", gap:8, marginTop:14, padding:"8px 10px", borderRadius:14, background:"#fff", border:"1px solid #ececf2" },
+  cookLabel: { fontSize:12.5, fontWeight:800, color:"#2a2a36", flexShrink:0 },
+  cookDate: { flex:1, minWidth:0, height:36, borderRadius:10, border:"1px solid #e8e8ee", background:"#fafafb", padding:"0 10px", fontSize:13, color:"#1a1a24", outline:"none", boxSizing:"border-box" },
+  cookClear: { fontSize:12, fontWeight:700, color:"#f0436c", cursor:"pointer", padding:"4px 2px", flexShrink:0 },
+  cookNote: { fontSize:11.5, color:"#6a6a7a", lineHeight:1.6, marginTop:6 },
+  cookLink: { display:"inline-block", marginLeft:4, fontWeight:800, color:"#4a63d8", cursor:"pointer" },
+  shopBanner: { display:"flex", alignItems:"center", gap:10, margin:"2px 0 10px", padding:"10px 12px", borderRadius:14, background:"linear-gradient(120deg,rgba(255,144,104,0.16),rgba(255,94,98,0.12))", border:"1px solid rgba(255,94,98,0.25)", cursor:"pointer" },
+  shopBannerIcon: { fontSize:20, flexShrink:0 },
+  shopBannerTitle: { display:"block", fontSize:13, fontWeight:800, color:"#c2372f" },
+  shopBannerSub: { display:"block", fontSize:10.5, color:"#8a6a68", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  shopBannerChev: { fontSize:18, fontWeight:700, color:"#d08a86", flexShrink:0 },
+  shopRecipes: { display:"flex", flexDirection:"column", gap:6, marginBottom:10 },
+  shopRecipeChip: { display:"flex", alignItems:"center", gap:8, padding:"9px 12px", borderRadius:12, background:"#fff", border:"1px solid #ececf2", cursor:"pointer" },
+  shopRecipeDate: { fontSize:11.5, fontWeight:800, color:"#e0483f", flexShrink:0 },
+  shopRecipeName: { flex:1, minWidth:0, fontSize:12.5, fontWeight:700, color:"#1a1a24", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  shopRecipeChev: { fontSize:15, color:"#b8b8c4", flexShrink:0 },
+  shopFrom: { display:"block", fontSize:10, color:"#a0a0ae", marginTop:2, lineHeight:1.4 },
+  calEvIng: { display:"inline-flex", alignItems:"center", gap:3, marginTop:4, padding:"3px 8px", borderRadius:7, background:"rgba(255,94,98,0.12)", color:"#d63f37", fontSize:10.5, fontWeight:800, cursor:"pointer" },
+  // ── 題名・写真の編集 ──
+  coverBox: { width:"100%", aspectRatio:"3 / 1", borderRadius:16, position:"relative", overflow:"hidden", touchAction:"none", cursor:"grab", border:"1px solid #e8e8ee", display:"flex", alignItems:"center", justifyContent:"center", userSelect:"none" },
+  coverNone: { fontSize:12, fontWeight:700, color:"rgba(255,255,255,0.92)" },
+  coverHint: { fontSize:10.5, color:"#a0a0ae", marginTop:6, textAlign:"center" },
+  coverZoom: { width:"100%", marginTop:6, accentColor:"#16161e" },
+  coverBtns: { display:"flex", flexWrap:"wrap", gap:8, marginTop:10 },
+  coverBtn: { padding:"9px 13px", borderRadius:12, border:"1px solid #e8e8ee", background:"#fff", fontSize:12.5, fontWeight:700, color:"#3a3a48", cursor:"pointer", userSelect:"none" },
+  coverBtnOn: { background:"#16161e", color:"#fff", borderColor:"#16161e" },
+  frameGrid: { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8, marginTop:10 },
+  frameCell: { position:"relative", borderRadius:12, overflow:"hidden", aspectRatio:"16 / 9", border:"2px solid transparent", cursor:"pointer", background:"#eee" },
+  frameCellOn: { borderColor:"#16161e", boxShadow:"0 0 0 2px #fff inset" },
+  frameImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover" },
+  frameLabel: { position:"absolute", left:6, bottom:6, padding:"2px 7px", borderRadius:100, background:"rgba(12,12,20,0.66)", color:"#fff", fontSize:10, fontWeight:800 },
+  revertLink: { fontSize:11.5, fontWeight:700, color:"#4a63d8", marginTop:6, cursor:"pointer" },
 };
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
