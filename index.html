@@ -178,6 +178,84 @@ function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
 }
 
+// ── 材料を「元データ」から読む（AIの読み取り・推定より正確）──
+// ①レシピサイト：ページに埋め込まれたレシピ情報（schema.org Recipe の recipeIngredient）＝書いてあるとおりの材料。
+//   Jina Reader の html モードは <script type="application/ld+json"> を残す（クックパッドで実測 2026-10-18）。AIもキーも要らない。
+// ②YouTube：概要欄。動画ページはブラウザから読めない（CORS・Jinaは一時ブロック）ので、公式の YouTube Data API v3（videos.list＝1回1単位・
+//   既定は1日10,000単位 https://developers.google.com/youtube/v3/determine_quota_cost ）をユーザー自身のキーで読む（任意設定）。
+const LS_YTKEY = "nb_ytkey";
+const decodeEnt = s => String(s || "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
+function findRecipeLd(o, depth = 0) {
+  if (!o || depth > 6) return null;
+  if (Array.isArray(o)) { for (const v of o) { const r = findRecipeLd(v, depth + 1); if (r) return r; } return null; }
+  if (typeof o !== "object") return null;
+  const t = o["@type"];
+  if ((t === "Recipe" || (Array.isArray(t) && t.includes("Recipe"))) && Array.isArray(o.recipeIngredient)) return o;
+  for (const v of Object.values(o)) { if (v && typeof v === "object") { const r = findRecipeLd(v, depth + 1); if (r) return r; } }
+  return null;
+}
+function recipeFromHtml(html) {
+  const re = /<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(String(html || "")))) {
+    let j; try { j = JSON.parse(m[1].trim()); } catch (e) { continue; }
+    const r = findRecipeLd(j);
+    if (!r) continue;
+    const ingredients = normIngredients(r.recipeIngredient.map(x => splitIngLine(decodeEnt(x))));
+    if (!ingredients.length) continue;
+    const y = Array.isArray(r.recipeYield) ? r.recipeYield.find(v => typeof v === "string") || r.recipeYield[0] : r.recipeYield;
+    return { name: decodeEnt(r.name).slice(0, 60), ingredients, servings: y ? decodeEnt(y).slice(0, 20) : "" };
+  }
+  return null;
+}
+async function fetchRecipeData(url) {
+  if (!url) return null;
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 9000);
+    const res = await fetch(`https://r.jina.ai/${url}`, { headers: { "X-Return-Format": "html" }, signal: ctrl.signal });
+    clearTimeout(to);
+    if (!res.ok) return null;
+    return recipeFromHtml(await res.text());
+  } catch (e) { return null; }
+}
+// 失敗は理由つきで返す（呼び出し側が画面に出す）
+async function fetchYtDesc(id, key) {
+  try {
+    const r = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${id}&key=${encodeURIComponent(key)}`);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.error) {
+      const e = d.error || {};
+      const why = [(e.errors && e.errors[0] && e.errors[0].reason) || "", e.status || "", e.message || ""].join(" ");
+      return { error: /quotaExceeded|dailyLimit/i.test(why) ? "今日の読み取り上限に達しました（明日また読めます）"
+        : /keyInvalid|API_KEY_INVALID|API key not valid/i.test(why) ? "YouTubeのキーが正しくありません（⚙で確かめてください）"
+        : /Referer|referrer|SERVICE_DISABLED|accessNotConfigured|PERMISSION_DENIED|forbidden/i.test(why) ? "YouTubeのキーの設定を確かめてください（YouTube Data API v3 の有効化・使えるサイトの指定）"
+        : "概要欄を読めませんでした" + (e.message ? `（${String(e.message).slice(0, 80)}）` : "") };
+    }
+    const s = d.items && d.items[0] && d.items[0].snippet;
+    if (!s) return { error: "動画が見つかりませんでした（非公開・削除の可能性）" };
+    return { description: s.description || "", title: s.title || "", channel: s.channelTitle || "" };
+  } catch (e) { return { error: "通信できず、概要欄を読めませんでした" }; }
+}
+// 概要欄に貼られた「レシピはこちら」のリンク（SNS・通販・動画は除く）。材料がリンク先にしか無い動画用
+function recipeLinksIn(text) {
+  const skip = /(^|\.)(youtube\.com|youtu\.be|instagram\.com|x\.com|twitter\.com|tiktok\.com|facebook\.com|threads\.net|line\.me|lin\.ee|amazon\.co\.jp|amazon\.com|amzn\.to|amzn\.asia|rakuten\.co\.jp|a\.r10\.to|airbnb\.jp|airbnb\.com)$/i;
+  const out = [];
+  for (const raw of String(text || "").match(/https?:\/\/[^\s<>"'）」】]+/g) || []) {
+    const u = raw.replace(/[.,)\]]+$/, "");
+    try { if (skip.test(new URL(u).hostname)) continue; } catch (e) { continue; }
+    if (!out.includes(u)) out.push(u);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+async function recipeFromLinks(text) {
+  const links = recipeLinksIn(text);
+  if (!links.length) return null;
+  const found = await Promise.all(links.map(u => fetchRecipeData(u).then(r => r ? { ...r, url: u } : null)));
+  return found.find(Boolean) || null;
+}
+
 // カードに出す写真＝自分で差し替えた写真(cover) > 放り込んだ写真 > URL先のサムネ。cover:"none"＝写真なしにした
 function coverOf(it) {
   if (!it || it.cover === "none") return "";
@@ -188,6 +266,78 @@ function coverFx(pos) {
   if (!pos) return {};
   const z = pos.z || 1;
   return { objectPosition: `${pos.x}% ${pos.y}%`, transform: z !== 1 ? `scale(${z})` : undefined, transformOrigin: `${pos.x}% ${pos.y}%` };
+}
+
+// E案のカードの地＝自分の写真のぼかし。その場でぼかす（CSS filter）と弱い端末でカクつく（2026-10-18 実測：GPUなし・CPU×4で 60→51コマ/秒）ので、
+// 写真を一度だけ小さな絵（24×40）に縮めてぼかし・色を濃くし、それを引き伸ばして敷く＝スクロール中の負担は普通の背景画像と同じ。
+// 画面に近づいたカードの分だけ作る（120枚あっても最初に全部は作らない）。
+// 別サイトの写真で読み取りが許されない時は、種類の色で代わりに塗る（見た目だけの飾りなので、写真そのものの表示には影響しない）
+const TINT_DONE = new Map(), TINT_WAIT = new Map();
+function tintBlurPass(a, W, H, r) {
+  const t = new Float32Array(a.length);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let s0 = 0, s1 = 0, s2 = 0;
+    for (let k = -r; k <= r; k++) { const j = (y * W + Math.min(W - 1, Math.max(0, x + k))) * 4; s0 += a[j]; s1 += a[j + 1]; s2 += a[j + 2]; }
+    const o = (y * W + x) * 4, n = 2 * r + 1; t[o] = s0 / n; t[o + 1] = s1 / n; t[o + 2] = s2 / n;
+  }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let s0 = 0, s1 = 0, s2 = 0;
+    for (let k = -r; k <= r; k++) { const j = (Math.min(H - 1, Math.max(0, y + k)) * W + x) * 4; s0 += t[j]; s1 += t[j + 1]; s2 += t[j + 2]; }
+    const o = (y * W + x) * 4, n = 2 * r + 1; a[o] = s0 / n; a[o + 1] = s1 / n; a[o + 2] = s2 / n; a[o + 3] = 255;
+  }
+}
+// 作るのは1枚ずつ・写真の読み込み(デコード)が終わってから・1枚ごとに一息おく（スクロール中にまとめて作るとカクつく＝2026-10-18 実測）
+const TINT_QUEUE = [];
+let tintBusy = false;
+function tintPump() {
+  if (tintBusy || !TINT_QUEUE.length) return;
+  tintBusy = true;
+  const { src, resolve } = TINT_QUEUE.shift();
+  const finish = out => { TINT_DONE.set(src, out); TINT_WAIT.delete(src); resolve(out); tintBusy = false; setTimeout(tintPump, 16); };
+  const img = new Image();
+  if (/^https?:/i.test(src) && !src.startsWith(location.origin)) img.crossOrigin = "anonymous";
+  img.src = src;
+  (img.decode ? img.decode() : new Promise((ok, ng) => { img.onload = ok; img.onerror = ng; })).then(() => {
+    let out = "";
+    try {
+      const W = 24, H = 40, c = document.createElement("canvas"); c.width = W; c.height = H;
+      const x = c.getContext("2d"); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+      // カードと同じ縦長で写真の真ん中を切り出し、さらに1.4倍に寄せる（元の作り＝140%に広げてぼかす、と同じ見え方）
+      const r = Math.max(W / img.naturalWidth, H / img.naturalHeight), sw = W / r / 1.4, sh = H / r / 1.4;
+      x.drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2, sw, sh, 0, 0, W, H);
+      const d = x.getImageData(0, 0, W, H), a = d.data;
+      for (let i = 0; i < 3; i++) tintBlurPass(a, W, H, 4); // 3回の箱ぼかし≒ぼかし28px相当（1マス≒7px）
+      for (let i = 0; i < a.length; i += 4) { const l = 0.2126 * a[i] + 0.7152 * a[i + 1] + 0.0722 * a[i + 2]; for (let k = 0; k < 3; k++) a[i + k] = Math.max(0, Math.min(255, l + (a[i + k] - l) * 1.8)); } // 色を1.8倍濃く
+      x.putImageData(d, 0, 0);
+      out = c.toDataURL("image/png");
+    } catch (e) { out = ""; } // 別サイトの写真で読み取りが許されない
+    finish(out);
+  }, () => finish(""));
+}
+function bakeTint(src) {
+  if (TINT_DONE.has(src)) return Promise.resolve(TINT_DONE.get(src));
+  if (TINT_WAIT.has(src)) return TINT_WAIT.get(src);
+  const p = new Promise(resolve => { TINT_QUEUE.push({ src, resolve }); });
+  TINT_WAIT.set(src, p);
+  tintPump();
+  return p;
+}
+function CardTint({ src, style, fallback }) {
+  const ref = useRef(null);
+  const [baked, setBaked] = useState(() => TINT_DONE.get(src));
+  useEffect(() => {
+    if (TINT_DONE.has(src)) { setBaked(TINT_DONE.get(src)); return; }
+    setBaked(undefined);
+    let alive = true;
+    const run = () => bakeTint(src).then(u => { if (alive) setBaked(u); });
+    const el = ref.current;
+    if (!el || !("IntersectionObserver" in window)) { run(); return () => { alive = false; }; }
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); run(); } }, { rootMargin: "800px 0px" });
+    io.observe(el);
+    return () => { alive = false; io.disconnect(); };
+  }, [src]);
+  const bg = baked ? `url(${baked}) center / 100% 100% no-repeat` : baked === "" ? fallback : "none";
+  return <div ref={ref} aria-hidden="true" style={{ ...style, background: bg }} />;
 }
 
 // 材料リストの出どころ（正直に出す＝推定を本物と取り違えさせない）
@@ -676,6 +826,8 @@ function App() {
   const [model, setModel] = useState(() => localStorage.getItem(LS_MODEL) || DEFAULT_MODEL);
   const [settings, setSettings] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
+  const [ytKey, setYtKey] = useState(() => { try { return localStorage.getItem(LS_YTKEY) || ""; } catch (e) { return ""; } }); // 任意：YouTubeの概要欄を読むキー
+  const [ytKeyDraft, setYtKeyDraft] = useState("");
   const [calPageIdx, setCalPageIdx] = useState(1);
 
   // 初回：IndexedDBから読込。無ければ旧localStorageから自動移行。それも無ければSEED。
@@ -734,11 +886,14 @@ function App() {
       calScrollRef.current.scrollLeft = calScrollRef.current.offsetWidth * next;
     }
   }
-  function openSettings() { setKeyDraft(apiKey); setSettings(true); }
+  function openSettings() { setKeyDraft(apiKey); setYtKeyDraft(ytKey); setSettings(true); }
   function saveSettings() {
     const k = keyDraft.trim();
     setApiKey(k);
     localStorage.setItem(LS_KEY, k);
+    const yk = ytKeyDraft.trim();
+    setYtKey(yk);
+    localStorage.setItem(LS_YTKEY, yk);
     localStorage.setItem(LS_MODEL, model);
     setSettings(false);
   }
@@ -867,13 +1022,19 @@ function App() {
     try {
       const sourceUrl = extractUrl(text);
       const ytId = sourceUrl ? ytIdOf(sourceUrl) : null;
-      let urlMeta = null, pageText = null, yt = null;
+      let urlMeta = null, pageText = null, yt = null, ytDesc = null, recipeLd = null;
+      const notes = []; // 解析は続けられるが、ユーザーに知らせること（握りつぶさない）
       if (sourceUrl) {
-        // メタ情報と本文を同時取得（本文が読めれば分類はほぼそれで決まる）。YouTubeは公式oEmbed＋サムネも並行で取る
-        [urlMeta, pageText, yt] = await Promise.all([
+        // メタ情報と本文を同時取得（本文が読めれば分類はほぼそれで決まる）。YouTubeは公式oEmbed＋サムネも並行で取る。
+        // 材料の元データ＝レシピサイトはページのレシピ情報、YouTubeは概要欄（キーがある時だけ）も並行で取る
+        [urlMeta, pageText, yt, ytDesc, recipeLd] = await Promise.all([
           fetchUrlMeta(sourceUrl), fetchPageText(sourceUrl), ytId ? fetchYouTube(ytId) : Promise.resolve(null),
+          ytId && ytKey ? fetchYtDesc(ytId, ytKey) : Promise.resolve(null),
+          ytId ? Promise.resolve(null) : fetchRecipeData(sourceUrl),
         ]);
       }
+      const ytDescText = ytDesc && ytDesc.description ? ytDesc.description : "";
+      if (ytDesc && ytDesc.error) notes.push(`※${ytDesc.error}`);
 
       let contextText = text || "";
       if (urlMeta) {
@@ -883,9 +1044,17 @@ function App() {
       }
       if (yt) {
         const thumbNote = (!img && yt.thumbData) ? "添付画像はこの動画のサムネイル。" : ""; // 写真も一緒に放り込まれた時は写真を優先して見せる
-        contextText += yt.meta
-          ? `\n\n[YouTube動画]\nタイトル: ${yt.meta.title}\nチャンネル: ${yt.meta.author}\n※動画の概要欄・音声・字幕は読めていない。${thumbNote}`
+        const ytTitle = (yt.meta && yt.meta.title) || (ytDesc && ytDesc.title) || "";
+        const ytAuthor = (yt.meta && yt.meta.author) || (ytDesc && ytDesc.channel) || "";
+        contextText += ytTitle
+          ? `\n\n[YouTube動画]\nタイトル: ${ytTitle}\nチャンネル: ${ytAuthor}\n※${ytDescText ? "音声・字幕は読めていない（概要欄は下の[YouTube概要欄]）" : "動画の概要欄・音声・字幕は読めていない"}。${thumbNote}`
           : `\n\n[YouTube動画]\n動画の情報を取得できなかった（非公開・削除・年齢制限などの可能性）。${thumbNote}`;
+      }
+      if (ytDescText) {
+        contextText += `\n\n[YouTube概要欄]\n${ytDescText.slice(0, 6000)}`;
+      }
+      if (recipeLd) {
+        contextText += `\n\n[ページのレシピ情報（ページに埋め込まれた構造化データ＝書いてあるとおり）]\n料理名: ${recipeLd.name}\n材料: ${recipeLd.ingredients.map(g => g.name + (g.qty ? " " + g.qty : "")).join("、")}`;
       }
       if (pageText) {
         contextText += `\n\n[ページ本文(抜粋)]\n${pageText}`;
@@ -941,7 +1110,8 @@ ${imgInstruction}
   Instagram=https://www.instagram.com/<id>/ ／ X(Twitter)=https://x.com/<id> ／ TikTok=https://www.tiktok.com/@<id> ／ YouTube=https://www.youtube.com/@<handle> ／ その他の明示URLはそのまま記載。
   **⚠️絶対に推測・記憶で補完しない。画面に写っている文字だけを根拠にする。読み取れない・自信がない場合は必ず空文字**（存在しないアカウントに飛ばすのは事故）。IDは@を除いた正確な綴りで。
 - **レシピ(recipe)のときは材料を ingredients に入れ、出どころを ingSrc に正直に書く**（買い物リストに使う）：
-  - 本文・説明・画像に材料が書いてある → **書いてある材料だけ**を、分量も原文どおり写す（調味料・「適量」「少々」も含める）。本文や説明から＝"page"、画像に写った材料表から＝"screen"
+  - 本文・説明・[YouTube概要欄]・画像に材料が書いてある → **書いてある材料だけ**を、分量も原文どおり写す（調味料・「適量」「少々」も含める）。本文や説明・概要欄から＝"page"、画像に写った材料表から＝"screen"
+  - 1つの概要欄・ページに**複数の料理の材料**が並んでいる時は、titleにした料理の分だけ写す（どれか1つに決められなければ全部写す）
   - 材料はどこにも書いていないが料理名ははっきり分かる（例：YouTubeで題名とサムネしか読めない）→ その料理の一般的な材料と目安量を出し、ingSrc＝"guess"（推定であることはアプリが表示する）
   - 料理名も分からない → ingredients は空配列、ingSrc は空文字
   - レシピ以外のカテゴリでは ingredients は空配列
@@ -967,7 +1137,7 @@ ${imgInstruction}
       if (img && data.error && /model/i.test(data.error.message || "")) {
         // 握りつぶさず、フォールバックした事実は画面に出す
         data = await callModel(IMG_MODEL_FALLBACK);
-        if (!data.error) setError(`※${IMG_MODEL}が使えないため${IMG_MODEL_FALLBACK}で解析しました`);
+        if (!data.error) notes.push(`※${IMG_MODEL}が使えないため${IMG_MODEL_FALLBACK}で解析しました`);
       }
       if (data.error) {
         setError("AIエラー: " + (data.error.message || "キーや残高を確認してください"));
@@ -1003,24 +1173,42 @@ ${imgInstruction}
         parsed.yt = ytId;
         if (!parsed.meta && yt && yt.meta && yt.meta.author) parsed.meta = yt.meta.author;
         // 動画情報が取れなかった事実は黙らず出す（題名・写真は後から直せる）
-        if (!yt || !yt.meta) setError("※YouTubeの動画情報が取れませんでした（非公開・削除などの可能性）。題名と写真は、箱に入れた後に ⋮ →「題名・写真を編集」で直せます。");
+        if (!yt || !yt.meta) notes.push("※YouTubeの動画情報が取れませんでした（非公開・削除などの可能性）。題名と写真は、箱に入れた後に ⋮ →「題名・写真を編集」で直せます。");
       }
+      // ページにレシピ情報が埋め込まれている＝レシピのページ（AIが別の種類にしても戻す）
+      if (recipeLd) parsed.category = "recipe";
       // レシピ：材料リスト。出どころ不明のものは安全側＝推定扱い
       if (parsed.category === "recipe") {
         parsed.ingredients = normIngredients(parsed.ingredients);
-        if (!parsed.ingredients.length) parsed.ingSrc = "";
+        if (recipeLd) {
+          // 元データ（ページのレシピ情報）があれば、AIの読み取りではなく書いてあるとおりを使う
+          parsed.ingredients = recipeLd.ingredients;
+          parsed.ingSrc = "page";
+          if (recipeLd.servings) parsed.servings = recipeLd.servings;
+        } else if (!parsed.ingredients.length) parsed.ingSrc = "";
         else {
           // AIの自己申告をそのまま信じない：読める文章／写真が実際に無かったのに「書いてあった」は推定に落とす
           let s = ING_SRC[parsed.ingSrc] ? parsed.ingSrc : "guess";
-          const hadText = !!(pageText || (urlMeta && urlMeta.description) || (!sourceUrl && text && text.trim()));
+          const hadText = !!(pageText || ytDescText || (urlMeta && urlMeta.description) || (!sourceUrl && text && text.trim()));
           if (s === "screen" && !img) s = "guess";
           if (s !== "screen" && s !== "guess") s = !hadText ? "guess" : ytId ? "desc" : sourceUrl ? "page" : "text";
           parsed.ingSrc = s;
         }
+        // 概要欄に材料が無く「レシピはこちら」のリンクだけある動画：リンク先のレシピ情報を読む
+        if (ytDescText && (!parsed.ingredients.length || parsed.ingSrc === "guess")) {
+          const linked = await recipeFromLinks(ytDescText);
+          if (linked) {
+            parsed.ingredients = linked.ingredients;
+            parsed.ingSrc = "page";
+            parsed.ingUrl = linked.url;
+            if (linked.servings) parsed.servings = linked.servings;
+          }
+        }
         parsed.servings = String(parsed.servings || "").slice(0, 20);
       } else {
-        delete parsed.ingredients; delete parsed.ingSrc; delete parsed.servings;
+        delete parsed.ingredients; delete parsed.ingSrc; delete parsed.servings; delete parsed.ingUrl;
       }
+      if (notes.length) setError(notes.join("\n"));
       setResult(parsed);
     } catch (e) {
       setError("解析できませんでした。通信かキーを確認して、もう一度試してください。");
@@ -1032,7 +1220,7 @@ ${imgInstruction}
   // 箱の中身にAIが答える（＝生活版NotebookLMの核。貯めた項目のテキストだけを根拠に回答）
   // 答えと一緒に該当カードのidも返させ、カード＋行動ボタン（開く/地図/予定化）を表示する＝「想起→行動」
   async function askBox(question) {
-    if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); setAskOpen(false); setSettings(true); return; }
+    if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); setAskOpen(false); openSettings(); return; }
     if (!question.trim()) return;
     setAskBusy(true); setAskAnswer(""); setAskHits([]); setPlanId(null);
     try {
@@ -1270,13 +1458,33 @@ ${JSON.stringify(list)}
     updateIng(id, arr => [...arr, { ...g, have: false }]);
     setIngAdd("");
   }
-  // 材料だけを読み取り直す。mode: screen=材料が映った画面のスクショ / text=貼った文章 / page=元のページ / guess=料理名から推定
+  // 元データ（ページのレシピ情報）から読めた材料をそのまま入れる。AIを通さない
+  function applyIngredients(id, rd, mode, extra) {
+    setItems(prev => prev.map(x => x.id === id
+      ? { ...x, ...extra, ingredients: rd.ingredients.map(g => ({ ...g, have: false })), ingSrc: mode, servings: String(rd.servings || x.servings || "").slice(0, 20) }
+      : x));
+    setIngPaste(null); setIngEdit(false);
+  }
+  // 材料だけを読み取り直す。mode: screen=材料が映った画面のスクショ / text=貼った文章 / page=元のページ / desc=YouTubeの概要欄 / guess=料理名から推定
   async function readIngredients(id, mode, payload) {
     const it = (items || []).find(x => x.id === id);
     if (!it) return;
-    if (!apiKey) { setIngMsg("先に右上の⚙からAPIキーを設定してください。"); return; }
+    if (mode === "desc" && !ytKey) { setIngMsg("概要欄を自動で読むには、YouTubeのキー（無料）を右上の⚙で設定してください。キーが無くても、概要欄の材料の部分をコピーして「文章を貼って」で読めます。"); return; }
     setIngBusy(true); setIngMsg("");
     try {
+      // ページ：まず元データ（ページに埋め込まれたレシピ情報）。あればAIもキーも使わず、書いてあるとおりに入れる
+      if (mode === "page") {
+        const rd = await fetchRecipeData(it.sourceUrl);
+        if (rd) { applyIngredients(id, rd, "page", { ingUrl: undefined }); setIngMsg(`${rd.ingredients.length}品を読み取りました（ページのレシピ情報から・書いてあるとおり）。`); return; }
+      }
+      let descText = "";
+      if (mode === "desc") {
+        const d = await fetchYtDesc(ytOf(it), ytKey);
+        if (d.error) { setIngMsg(d.error); return; }
+        descText = d.description || "";
+        if (!descText.trim()) { setIngMsg("この動画は概要欄が空でした。材料が映った場面をスクショして「画面のスクショから」で読み取ってください。"); return; }
+      }
+      if (!apiKey) { setIngMsg("先に右上の⚙からAPIキーを設定してください。"); return; }
       const content = [];
       let srcText = "";
       if (mode === "screen") {
@@ -1286,6 +1494,8 @@ ${JSON.stringify(list)}
         }
       } else if (mode === "text") {
         srcText = payload;
+      } else if (mode === "desc") {
+        srcText = descText;
       } else if (mode === "page") {
         srcText = await fetchPageText(it.sourceUrl);
         if (!srcText) { setIngMsg("ページを読めませんでした（ログインが必要・読み込み制限など）。材料が映った画面のスクショか、文章を貼って読み取ってください。"); return; }
@@ -1295,7 +1505,7 @@ ${JSON.stringify(list)}
         ? `料理「${dish}」の一般的な材料と目安量を出してください。推定なので、その料理の基本的な材料と調味料に絞る。料理名が特定できない場合は ingredients を空配列にする。`
         : mode === "screen"
         ? `添付画像（料理動画やレシピのスクショ）に**写っている材料だけ**を、分量も画面の表記どおり読み取ってください（調味料・「適量」「少々」も含める）。料理は「${dish}」。画像が複数なら全部合わせて1つのリストに。材料が写っていなければ ingredients を空配列にする（推測で足さない）。`
-        : `次の文章に**書いてある材料だけ**を、分量も原文どおり抜き出してください（調味料・「適量」「少々」も含める）。料理は「${dish}」。材料が書いていなければ ingredients を空配列にする（推測で足さない）。\n"""${String(srcText).slice(0, 8000)}"""`;
+        : `次の文章に**書いてある材料だけ**を、分量も原文どおり抜き出してください（調味料・「適量」「少々」も含める）。料理は「${dish}」。複数の料理の材料が並んでいる時は、その料理の分だけ（どれか決められなければ全部）。材料が書いていなければ ingredients を空配列にする（推測で足さない）。\n"""${String(srcText).slice(0, 8000)}"""`;
       content.push({ type: "text", text: `${how}\n以下のJSONだけを返してください。前置き・コードブロック不要:\n{"ingredients":[{"name":"材料名","qty":"分量(なければ空文字)"}],"servings":"何人分(分かれば。なければ空文字)"}` });
       let data = await callClaude(mode === "screen" ? IMG_MODEL : model, content, 1500);
       if (mode === "screen" && data.error && /model/i.test(data.error.message || "")) data = await callClaude(IMG_MODEL_FALLBACK, content, 1500);
@@ -1303,6 +1513,13 @@ ${JSON.stringify(list)}
       const raw = data.content.filter(c => c.type === "text").map(c => c.text).join("").replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(raw);
       const list = normIngredients(parsed.ingredients);
+      if (!list.length && mode === "desc") {
+        // 概要欄に材料が無い動画：「レシピはこちら」のリンク先にレシピ情報があれば、それを読む
+        const linked = await recipeFromLinks(descText);
+        if (linked) { applyIngredients(id, linked, "page", { ingUrl: linked.url }); setIngMsg(`${linked.ingredients.length}品を読み取りました（概要欄のリンク先のレシピ情報から）。`); return; }
+        setIngMsg("概要欄に材料が書いてありませんでした。材料が映った場面をスクショして「画面のスクショから」で読み取ってください。");
+        return;
+      }
       if (!list.length) {
         setIngMsg(mode === "guess" ? "料理名が分からず、材料を出せませんでした。題名を料理名に直してから、もう一度試してください。"
           : mode === "screen" ? "画像の中に材料が見つかりませんでした。材料の一覧が映っている場面をスクショしてください。"
@@ -1310,7 +1527,7 @@ ${JSON.stringify(list)}
         return;
       }
       setItems(prev => prev.map(x => x.id === id
-        ? { ...x, ingredients: list.map(g => ({ ...g, have: false })), ingSrc: mode, servings: String(parsed.servings || x.servings || "").slice(0, 20) }
+        ? { ...x, ingredients: list.map(g => ({ ...g, have: false })), ingSrc: mode, ingUrl: undefined, servings: String(parsed.servings || x.servings || "").slice(0, 20) }
         : x));
       setIngPaste(null); setIngEdit(false);
       setIngMsg(`${list.length}品を読み取りました（${ING_SRC[mode].label}）。`);
@@ -1743,28 +1960,33 @@ ${JSON.stringify(list)}
             const heroImg = coverOf(it);
             return (
               <div key={it.id} style={S.card}>
+                {/* 見た目のお試し（?look=liquid）の時だけ：カードの地に自分の写真をぼかして敷く。普段（S.cardTint なし）は何も出ない */}
+                {S.cardTint && heroImg && (S.tintBaked
+                  ? <CardTint src={heroImg} style={S.cardTint} fallback={c.grad} />
+                  : <img src={heroImg} alt="" aria-hidden="true" style={S.cardTint} onError={e=>{e.target.style.display='none';}} />)}
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
                 <div style={{...S.dBar, background:c.grad}}/>
                 <div style={S.dCol}>
                   {/* 画像タップ＝スキャン（調べる）。拡大は右下の「⤢ 拡大」バッジをタップ。
                       調べる先(sourceUrl)が無い画像はタップしても何も起きないので、その場合だけ拡大に落とす */}
-                  <div style={{...S.hero, ...(heroImg?{}:{background:c.grad}), ...(heroImg?{cursor:"pointer"}:{})}}
+                  {/* 写真は高さを取って見せる（右上＝⋮、右下＝⤢ 拡大。高さ112で上下が重ならない）。写真なしは色の帯だけ */}
+                  <div style={{...S.hero, ...(heroImg?{cursor:"pointer"}:S.heroNoImg), ...(heroImg?{}:{background:c.grad})}}
                     onClick={e => { if(!heroImg) return; if(it.sourceUrl){ handleImageSearch(e,it); } else { e.stopPropagation(); setLightbox(heroImg); } }}>
-                    {heroImg && <img src={heroImg} alt="" style={{...S.cardHeroImg, ...coverFx(it.coverPos)}} onError={e=>{e.target.style.display='none';}} />}
+                    {heroImg && <img src={heroImg} alt="" style={{...S.cardHeroImg, ...(S.ytAspect && ytOf(it) ? S.ytAspect : {}), ...coverFx(it.coverPos)}} onError={e=>{e.target.style.display='none';}} />}
                     {!heroImg && <span style={S.heroGlow}/>}
-                    <span style={S.cardCat}>{c.label}</span>
                     {heroImg && scanning !== it.id && (
                       <span style={S.expandBadge} onClick={e=>{e.stopPropagation(); setLightbox(heroImg);}}>⤢ 拡大</span>
                     )}
                     {scanning === it.id && <ScanFX loop={false} />}
                   </div>
                   <div style={S.cardBody}>
+                   <div style={S.cardMain}>
                     <div style={S.cardTitle}>{it.title}</div>
                     {it.meta && <div style={S.cardMeta}>{it.meta}</div>}
                     {it.chip && <span style={{...S.cardChip, background:c.chip, color:c.chipC}}>{it.chip}</span>}
                     {it.category === "recipe" && (
                       <div style={S.cardIngBtn} onClick={e=>{e.stopPropagation(); openRecipe(it.id);}}>
-                        🧺 {(it.ingredients||[]).length ? `材料 ${it.ingredients.length}品${it.ingSrc==="guess"?"（推定）":""}` : "材料を出す"}
+                        🧺 {(it.ingredients||[]).length ? `材料${it.ingredients.length}品${it.ingSrc==="guess"?"（推定）":""}` : "材料を出す"}
                       </div>
                     )}
                     {it.category === "basho" && (
@@ -1793,7 +2015,12 @@ ${JSON.stringify(list)}
                         {ytOf(it) ? "▶ 動画を見る" : `🔍 ${it.searchLabel || "調べる"}`}
                       </div>
                     )}
-                    {it.added && <div style={S.cardDate}>📥 {(()=>{const p=it.added.split("-");return `${+p[1]}/${+p[2]}`;})()}</div>}
+                   </div>
+                    {/* 下段＝種類（大きめの色ピル）と入れた日。カードの一番下にそろえる */}
+                    <div style={S.cardFoot}>
+                      <span style={{...S.cardCatPill, background:c.chip, color:c.chipC}}><span style={{...S.tabDot, background:c.dot}}/>{c.label}</span>
+                      {it.added && <span style={S.cardDate}>{(()=>{const p=it.added.split("-");return `${+p[1]}/${+p[2]}`;})()}</span>}
+                    </div>
                   </div>
                 </div>
                 {menuId===it.id && (
@@ -2387,7 +2614,10 @@ ${JSON.stringify(list)}
                   {ings.length>0 && <span style={S.ingEditToggle} onClick={()=>setIngEdit(!ingEdit)}>{ingEdit ? "完了" : "編集"}</span>}
                 </div>
                 {it.ingSrc==="guess" && ings.length>0 && (
-                  <div style={S.ingWarn}>動画やページに書いてあった材料ではなく、料理名から出した<b>一般的な材料（目安）</b>です。正確にしたいときは、材料が映った場面をスクショして下の「画面のスクショから」で読み取ってください。</div>
+                  <div style={S.ingWarn}>動画やページに書いてあった材料ではなく、料理名から出した<b>一般的な材料（目安）</b>です。正確にしたいときは、下の{ytId ? "「概要欄から」か" : ""}「画面のスクショから」で読み取ってください。</div>
+                )}
+                {it.ingUrl && ings.length>0 && (
+                  <a href={it.ingUrl} target="_blank" rel="noopener noreferrer" style={S.ingFromLink}>材料はこのページから ↗ {it.ingUrl.replace(/^https?:\/\//, "").slice(0, 40)}</a>
                 )}
                 {ings.length===0
                   ? <div style={S.ingEmpty}>まだ材料がありません。下のボタンで読み取れます。</div>
@@ -2419,30 +2649,43 @@ ${JSON.stringify(list)}
 
                 <div style={S.ingReadHead}>{ings.length ? "材料を読み取り直す" : "材料を読み取る"}</div>
                 <div style={S.ingReadGrid}>
+                  {/* 元データ（書いてあるとおり）を先に並べる：YouTube＝概要欄／レシピサイト＝ページのレシピ情報 */}
+                  {ytId && (
+                    <div style={{...S.ingReadBtn, ...S.ingReadBtnMain, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) readIngredients(it.id, "desc"); }}>
+                      ▶ 概要欄から<span style={S.ingReadSub}>{ytKey ? "動画の説明文を読む" : "要：YouTubeのキー（⚙）"}</span>
+                    </div>
+                  )}
+                  {it.sourceUrl && !ytId && !it.searchLabel && (
+                    <div style={{...S.ingReadBtn, ...S.ingReadBtnMain, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) readIngredients(it.id, "page"); }}>
+                      🔗 ページから<span style={S.ingReadSub}>レシピ欄を書いてあるとおり</span>
+                    </div>
+                  )}
                   <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) ingImgRef.current?.click(); }}>
                     📷 画面のスクショから<span style={S.ingReadSub}>材料が映った場面（3枚まで）</span>
                   </div>
                   <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{}), ...(ingPaste!==null?{borderColor:"#16161e"}:{})}} onClick={()=>{ if(!ingBusy) setIngPaste(ingPaste===null ? "" : null); }}>
                     📝 文章を貼って<span style={S.ingReadSub}>概要欄・メモなど</span>
                   </div>
-                  {it.sourceUrl && !ytId && !it.searchLabel && (
-                    <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) readIngredients(it.id, "page"); }}>
-                      🔗 ページから<span style={S.ingReadSub}>元のページを読む</span>
-                    </div>
-                  )}
                   <div style={{...S.ingReadBtn, ...(ingBusy?{opacity:0.5}:{})}} onClick={()=>{ if(!ingBusy) readIngredients(it.id, "guess"); }}>
                     💡 料理名から推定<span style={S.ingReadSub}>一般的な材料（目安）</span>
                   </div>
                 </div>
                 {ingPaste !== null && (
                   <>
+                    <div style={S.pasteBtn} onClick={async()=>{
+                      if (ingBusy) return;
+                      try {
+                        const t = await navigator.clipboard.readText();
+                        if (t && t.trim()) setIngPaste(t); else setIngMsg("コピーされた文字がありませんでした。先に概要欄などの文章をコピーしてください。");
+                      } catch (e) { setIngMsg("貼り付けが許可されませんでした。下の入力欄を長押しして「ペースト」してください。"); }
+                    }}>📋 コピーした文章をここに貼る</div>
                     <textarea style={{...S.textarea, minHeight:90, marginTop:8}} placeholder="YouTubeの概要欄やレシピの文章を貼り付け"
                       value={ingPaste} onChange={e=>setIngPaste(e.target.value)} disabled={ingBusy} />
                     <button style={{...S.btnMain, width:"100%", flex:"none", marginTop:8, ...(!ingPaste.trim()||ingBusy?{opacity:0.5}:{})}}
                       disabled={!ingPaste.trim()||ingBusy} onClick={()=>readIngredients(it.id, "text", ingPaste)}>この文章から読み取る</button>
                   </>
                 )}
-                {ingBusy && <div style={S.ingBusy}>AIが材料を読み取り中…</div>}
+                {ingBusy && <div style={S.ingBusy}>材料を読み取り中…</div>}
                 <input ref={ingImgRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>onIngImages(e, it.id)} />
                 <div style={S.sheetBtns}>
                   <button style={S.btnGhost} onClick={()=>setRecipeId(null)} disabled={ingBusy}>閉じる</button>
@@ -2552,6 +2795,28 @@ ${JSON.stringify(list)}
               <div style={S.help}>
                 キーの取り方： <b>console.anthropic.com</b> に登録 → Billingで$5チャージ → API keys → Create Key
               </div>
+              <div style={S.fieldLabel}>YouTubeのキー（任意）＝レシピ動画の材料を概要欄から読む</div>
+              <textarea
+                style={{...S.textarea, minHeight:48, fontFamily:"monospace", fontSize:12}}
+                placeholder="AIza...（無くても使えます）"
+                value={ytKeyDraft}
+                onChange={e=>setYtKeyDraft(e.target.value)}
+              />
+              <div style={S.help}>
+                入れると、YouTubeのレシピ動画を放り込んだ時に<b>概要欄に書いてある材料をそのまま</b>読みます（推定より正確）。無料（1日10,000回まで・動画1本＝1回）。キーはこの端末の中だけに保存されます。<br/>
+                取り方： <b>console.cloud.google.com</b>（Googleアカウント）→ プロジェクトを作る → 「APIとサービス」→「ライブラリ」で <b>YouTube Data API v3</b> を有効にする → 「認証情報」→「認証情報を作成」→「APIキー」→ できたキーの「キーを制限」で、使えるサイトを <b>claudehikuroudo-pixel.github.io</b>、使えるAPIを YouTube Data API v3 だけにする
+              </div>
+              {/* 見た目のお試し（2026-10-18）：本物の箱のまま iPhone で重さ・見やすさを比べるため。押すと画面を読み直す。この端末だけ */}
+              <div style={S.fieldLabel}>見た目（お試し）</div>
+              <div style={S.lookRow}>
+                {LOOK_TRY.map(L => (
+                  <div key={L.k} style={{...S.lookBtn, ...(LOOK === L.k ? S.lookBtnOn : {})}}
+                    onClick={() => { try { if (L.k) localStorage.setItem("nb_look", L.k); else localStorage.removeItem("nb_look"); } catch (e) { alert("この端末では切り替えを保存できませんでした"); return; } location.reload(); }}>
+                    {L.name}
+                  </div>
+                ))}
+              </div>
+              <div style={S.help}>この端末だけで切り替わります（箱の中身はそのまま）。スクロールが重い・文字が読みにくいと感じたら「今の見た目」に戻せます。</div>
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setSettings(false)}>閉じる</button>
                 <button style={S.btnMain} onClick={saveSettings}>保存する</button>
@@ -2707,7 +2972,7 @@ const S = {
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
   tabDot: { width:7, height:7, borderRadius:"50%", flexShrink:0 }, tabLbl:{ fontSize:12, fontWeight:600, color:"#6a6a7a" },
-  wall: { padding:"2px 18px 150px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, alignItems:"stretch" },
+  wall: { padding:"2px 18px 150px", display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, alignItems:"stretch" },
   tagline: { padding:"0 24px 4px", fontSize:12, fontWeight:700, color:"#a89ad0", letterSpacing:"0.01em" },
   wallEmpty: { gridColumn:"1 / -1", textAlign:"center", padding:"34px 24px 40px", display:"flex", flexDirection:"column", alignItems:"center", gap:8 },
   wallEmptyEmoji: { fontSize:38, opacity:0.9 },
@@ -2715,15 +2980,21 @@ const S = {
   wallEmptyText: { fontSize:12.5, fontWeight:600, color:"#9a9aaa", lineHeight:1.7, maxWidth:300 },
   wallEmptyBtn: { marginTop:8, padding:"12px 22px", borderRadius:16, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:14, fontWeight:800, cursor:"pointer", boxShadow:"0 6px 18px rgba(120,110,220,0.35)" },
   card: { borderRadius:18, minHeight:142, display:"flex", background:"rgba(255,255,255,0.72)", backdropFilter:"blur(30px)", WebkitBackdropFilter:"blur(30px)", border:"1px solid rgba(255,255,255,0.9)", overflow:"hidden", position:"relative", boxShadow:"0 8px 24px rgba(100,100,150,0.1)" },
-  cardMenuBtn: { position:"absolute", top:8, right:8, zIndex:5, width:28, height:28, borderRadius:14, background:"rgba(0,0,0,0.3)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, fontWeight:700, cursor:"pointer", lineHeight:1, backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)" },
+  // ⋮＝右上。AppleのHIGの最小タップ28pt以上（34px）。⤢ 拡大（右下）と縦に重ならないよう写真は高さ112
+  cardMenuBtn: { position:"absolute", top:6, right:6, zIndex:12, width:34, height:34, borderRadius:17, background:"rgba(10,10,20,0.42)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:19, fontWeight:700, cursor:"pointer", lineHeight:1, backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", boxShadow:"0 2px 8px rgba(0,0,0,0.18)" },
   menuClose: { position:"absolute", top:6, right:9, fontSize:13, fontWeight:700, color:"#aaa", cursor:"pointer", padding:4, lineHeight:1 },
-  hero: { height:62, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:10 },
+  hero: { height:112, flexShrink:0, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:10 },
+  heroNoImg: { height:46 }, // 写真が無いカードは色の帯だけ（⋮が収まる高さ）
   heroGlow: { position:"absolute", top:-30, right:-20, width:80, height:80, borderRadius:"50%", background:"radial-gradient(circle,rgba(255,255,255,0.5),transparent 70%)" },
-  cardCat: { position:"absolute", top:10, left:10, fontSize:9.5, fontWeight:800, letterSpacing:"0.02em", color:"#fff", padding:"3px 9px", borderRadius:8, background:"rgba(0,0,0,0.18)", backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)", textShadow:"0 1px 3px rgba(0,0,0,0.45)" },
+  cardCat: { position:"absolute", top:10, left:10, fontSize:11.5, fontWeight:800, letterSpacing:"0.02em", color:"#fff", padding:"4px 10px", borderRadius:9, background:"rgba(0,0,0,0.28)", backdropFilter:"blur(8px)", WebkitBackdropFilter:"blur(8px)", textShadow:"0 1px 3px rgba(0,0,0,0.45)" },
   // D型カード：左にカテゴリ色のアクセントバー＋本文は白地で読みやすく
   dBar: { width:7, flexShrink:0 },
   dCol: { flex:1, minWidth:0, display:"flex", flexDirection:"column" },
-  cardBody: { padding:"9px 11px 11px" },
+  cardBody: { flex:1, display:"flex", flexDirection:"column", padding:"10px 10px 10px" },
+  cardMain: { marginBottom:8 },
+  // 下段：種類の色ピル（12px・太字）＋入れた日。marginTop:auto でカードの一番下にそろう
+  cardFoot: { marginTop:"auto", paddingTop:8, borderTop:"1px solid rgba(20,20,40,0.07)", display:"flex", alignItems:"center", justifyContent:"space-between", gap:6 },
+  cardCatPill: { display:"inline-flex", alignItems:"center", gap:5, minWidth:0, padding:"4px 9px", borderRadius:100, fontSize:12, fontWeight:800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" },
   // C型カード（画像主役）：写真が主役。写真が無い時はカテゴリ色を敷く
   cMedia: { position:"relative", flex:1, minHeight:184, overflow:"hidden", display:"flex", alignItems:"flex-end" },
   cScrim: { position:"relative", zIndex:2, width:"100%", padding:"28px 12px 12px", background:"linear-gradient(to top, rgba(8,8,22,0.85), rgba(8,8,22,0.45) 58%, transparent)" },
@@ -2733,11 +3004,12 @@ const S = {
   cChip: { fontSize:9.5, fontWeight:800, color:"#fff", background:"rgba(255,255,255,0.24)", padding:"3px 8px", borderRadius:8, backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)" },
   cAction: { fontSize:9.5, fontWeight:800, color:"#fff", background:"rgba(255,255,255,0.18)", padding:"3px 8px", borderRadius:8, textDecoration:"none", cursor:"pointer", backdropFilter:"blur(4px)", WebkitBackdropFilter:"blur(4px)", whiteSpace:"nowrap" },
   cDate: { fontSize:9, fontWeight:700, color:"rgba(255,255,255,0.55)", marginLeft:"auto" },
-  cardTitle: { fontSize:12, fontWeight:700, color:"#1a1a24", lineHeight:1.38, marginBottom:3, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" },
-  cardMeta: { fontSize:10, color:"#9a9aaa", display:"-webkit-box", WebkitLineClamp:1, WebkitBoxOrient:"vertical", overflow:"hidden" },
-  cardDate: { fontSize:9, color:"#b0b0be", fontWeight:600, marginTop:6 },
-  cardChip: { display:"inline-block", marginTop:6, padding:"4px 9px", borderRadius:100, fontSize:10, fontWeight:600 },
-  menu: { position:"absolute", inset:0, zIndex:10, background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:"10px 10px 10px", display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
+  // 文字はAppleのHIGの最小11pt以上に（以前は9〜10pxで小さすぎた）
+  cardTitle: { fontSize:14, fontWeight:800, color:"#16161e", lineHeight:1.4, marginBottom:3, letterSpacing:"-0.01em", display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" },
+  cardMeta: { fontSize:11.5, color:"#7c7c8c", display:"-webkit-box", WebkitLineClamp:1, WebkitBoxOrient:"vertical", overflow:"hidden" },
+  cardDate: { fontSize:11, color:"#9a9aaa", fontWeight:700, flexShrink:0 },
+  cardChip: { display:"inline-block", marginTop:6, padding:"4px 10px", borderRadius:100, fontSize:11.5, fontWeight:700 },
+  menu: { position:"absolute", inset:0, zIndex:20, /* ⋮(12)・⤢ 拡大(11)より上＝開いたメニューに重ならない */ background:"rgba(255,255,255,0.97)", backdropFilter:"blur(10px)", padding:"10px 10px 10px", display:"flex", flexDirection:"column", gap:2, justifyContent:"flex-start", overflowY:"auto", WebkitOverflowScrolling:"touch" },
   menuHint: { fontSize:9, fontWeight:700, color:"#aaa", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:4, textAlign:"center" },
   menuItem: { display:"flex", alignItems:"center", gap:8, padding:"9px 10px", borderRadius:10, fontSize:12, fontWeight:600, color:"#333", cursor:"pointer" },
   menuDel: { marginTop:8, padding:"13px 10px", borderRadius:12, fontSize:14, fontWeight:800, color:"#fff", textAlign:"center", cursor:"pointer", background:"linear-gradient(120deg,#ff5e8a,#ff8f6b)", boxShadow:"0 4px 12px rgba(255,94,138,0.35)" },
@@ -2781,17 +3053,17 @@ const S = {
   photoX: { width:26, height:26, borderRadius:13, background:"#f2f2f6", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#999", cursor:"pointer", flexShrink:0 },
   previewImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
   cardHeroImg: { position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:1 },
-  cardLink: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, padding:"3px 8px", borderRadius:7, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:10, fontWeight:700, textDecoration:"none" },
+  cardLink: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:3, marginTop:6, padding:"7px 6px", borderRadius:9, background:"rgba(22,150,216,0.1)", color:"#1690d8", fontSize:12, fontWeight:700, textDecoration:"none" },
   // 画像内のID/URLから飛ぶボタン（スクショ→本人ページ）。目立つように塗り
-  cardGoBtn: { display:"inline-flex", alignItems:"center", gap:4, marginTop:6, marginRight:5, padding:"4px 9px", borderRadius:7, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:10, fontWeight:800, textDecoration:"none", boxShadow:"0 3px 10px rgba(120,110,220,0.35)" },
+  cardGoBtn: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:4, marginTop:6, marginRight:0, padding:"7px 6px", borderRadius:9, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:12, fontWeight:800, textDecoration:"none", boxShadow:"0 3px 10px rgba(120,110,220,0.35)" },
   resultGoBtn: { display:"flex", alignItems:"center", gap:8, marginTop:14, padding:"12px 14px", borderRadius:14, background:"linear-gradient(120deg,#8b54f5,#6b8bff)", color:"#fff", fontSize:13.5, fontWeight:800, textDecoration:"none", boxShadow:"0 6px 18px rgba(120,110,220,0.35)" },
   resultGoUrl: { marginLeft:"auto", fontSize:10.5, fontWeight:700, color:"rgba(255,255,255,0.8)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:170 },
   cardImgBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:5, padding:"3px 8px", borderRadius:7, background:"rgba(100,100,150,0.1)", color:"#6a6a7a", fontSize:10, fontWeight:700, cursor:"pointer" },
   // 画像の上に出す「⤢ 拡大」＝ここをタップすると拡大（画像本体のタップはスキャンに戻したので、拡大はこのバッジが入口）
-  expandBadge: { position:"absolute", right:8, bottom:8, zIndex:11, display:"inline-flex", alignItems:"center", gap:3, padding:"6px 11px", borderRadius:100, background:"rgba(12,12,20,0.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", color:"#fff", fontSize:10.5, fontWeight:800, letterSpacing:"0.02em", boxShadow:"0 2px 8px rgba(0,0,0,0.3)", cursor:"pointer" },
+  expandBadge: { position:"absolute", right:8, bottom:8, zIndex:11, display:"inline-flex", alignItems:"center", gap:3, padding:"6px 11px", borderRadius:100, background:"rgba(12,12,20,0.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", color:"#fff", fontSize:11.5, fontWeight:800, letterSpacing:"0.02em", boxShadow:"0 2px 8px rgba(0,0,0,0.3)", cursor:"pointer" },
   // 画像から調べる＝独立ボタン（画像タップは拡大に譲ったので、検索は文字で明示）
-  cardSearchBtn: { display:"inline-flex", alignItems:"center", gap:4, marginTop:6, marginRight:5, padding:"4px 10px", borderRadius:8, background:"rgba(22,150,216,0.14)", border:"1px solid rgba(22,150,216,0.25)", color:"#1279b8", fontSize:10.5, fontWeight:800, cursor:"pointer" },
-  cardMapBtn: { display:"inline-flex", alignItems:"center", gap:3, marginTop:6, marginRight:5, padding:"4px 9px", borderRadius:7, background:"rgba(47,216,122,0.16)", color:"#1aa85c", fontSize:10, fontWeight:800, textDecoration:"none" },
+  cardSearchBtn: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:4, marginTop:6, marginRight:0, padding:"7px 6px", borderRadius:9, background:"rgba(22,150,216,0.14)", border:"1px solid rgba(22,150,216,0.25)", color:"#1279b8", fontSize:12, fontWeight:800, cursor:"pointer" },
+  cardMapBtn: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:3, marginTop:6, marginRight:0, padding:"7px 6px", borderRadius:9, background:"rgba(47,216,122,0.16)", color:"#1aa85c", fontSize:12, fontWeight:800, textDecoration:"none" },
   lbWrap: { position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:2100, display:"flex", alignItems:"center", justifyContent:"center" },
   lbImg: { maxWidth:"92%", maxHeight:"80vh", borderRadius:16, objectFit:"contain" },
   lbClose: { position:"absolute", top:28, right:24, width:36, height:36, borderRadius:18, background:"rgba(255,255,255,0.18)", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, cursor:"pointer", fontWeight:700 },
@@ -2868,8 +3140,11 @@ const S = {
   attXSm: { fontSize:9.5, color:"#bcbcc8", fontWeight:700, padding:"0 1px" },
   attPin: { fontSize:14, color:"#a0a0b0", cursor:"pointer", padding:"2px 4px", flexShrink:0, alignSelf:"flex-start" },
   help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
+  lookRow: { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8 },
+  lookBtn: { padding:"11px 8px", borderRadius:12, background:"#f2f2f6", border:"1.5px solid transparent", fontSize:13, fontWeight:700, color:"#3a3a48", textAlign:"center", cursor:"pointer" },
+  lookBtnOn: { background:"#f4f1ff", border:"1.5px solid #8B54F5", color:"#5B2FD0" },
   // ── レシピの材料 ──
-  cardIngBtn: { display:"inline-flex", alignItems:"center", gap:4, marginTop:6, marginRight:5, padding:"4px 10px", borderRadius:8, background:"rgba(255,94,98,0.12)", border:"1px solid rgba(255,94,98,0.25)", color:"#d63f37", fontSize:10.5, fontWeight:800, cursor:"pointer" },
+  cardIngBtn: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:4, marginTop:6, marginRight:0, padding:"7px 6px", borderRadius:9, background:"rgba(255,94,98,0.12)", border:"1px solid rgba(255,94,98,0.25)", color:"#d63f37", fontSize:12, fontWeight:800, cursor:"pointer" },
   recipeHero: { width:"100%", aspectRatio:"3 / 1", borderRadius:16, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:12, boxSizing:"border-box" },
   recipeEditBtn: { position:"absolute", right:8, top:8, zIndex:2, padding:"6px 11px", borderRadius:100, background:"rgba(12,12,20,0.66)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", color:"#fff", fontSize:11, fontWeight:800, cursor:"pointer" },
   recipeTitle: { fontSize:16, fontWeight:800, color:"#16161e", lineHeight:1.45, margin:"12px 0 3px", letterSpacing:"-0.01em" },
@@ -2896,7 +3171,11 @@ const S = {
   ingReadHead: { fontSize:12, fontWeight:800, color:"#888", margin:"20px 0 8px" },
   ingReadGrid: { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8 },
   ingReadBtn: { display:"flex", flexDirection:"column", gap:2, padding:"11px 12px", borderRadius:14, border:"1px solid #e8e8ee", background:"#fff", fontSize:12.5, fontWeight:800, color:"#2a2a36", cursor:"pointer", userSelect:"none" },
-  ingReadSub: { fontSize:10, fontWeight:600, color:"#a0a0ae" },
+  ingReadSub: { fontSize:11, fontWeight:600, color:"#8a8a98" },
+  // 元データから読む（書いてあるとおり＝いちばん正確）ボタンは緑で先頭に
+  ingReadBtnMain: { border:"1.5px solid rgba(26,168,92,0.45)", background:"rgba(47,216,122,0.08)", color:"#137a44" },
+  ingFromLink: { display:"block", fontSize:11.5, fontWeight:700, color:"#1aa85c", textDecoration:"none", margin:"-2px 0 8px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  pasteBtn: { marginTop:8, padding:"11px 12px", borderRadius:12, background:"#16161e", color:"#fff", fontSize:13, fontWeight:800, textAlign:"center", cursor:"pointer", userSelect:"none" },
   ingBusy: { fontSize:12, fontWeight:700, color:"#8b54f5", marginTop:10, textAlign:"center" },
   ingPreview: { background:"#fff", border:"1px solid #eee", borderRadius:14, padding:"11px 13px", marginBottom:12 },
   ingPreviewHead: { display:"flex", alignItems:"center", gap:8, fontSize:12.5, fontWeight:800, color:"#16161e", marginBottom:6 },
@@ -2937,6 +3216,270 @@ const S = {
   frameLabel: { position:"absolute", left:6, bottom:6, padding:"2px 7px", borderRadius:100, background:"rgba(12,12,20,0.66)", color:"#fff", fontSize:10, fontWeight:800 },
   revertLink: { fontSize:11.5, fontWeight:700, color:"#4a63d8", marginTop:6, cursor:"pointer" },
 };
+
+// ── 見た目のお試し（URLに ?look=… を付けた時だけ）。普段の見た目（A案）は変えない。拓也さんが見比べて決めるための切替（2026-10-18）
+//    glass＝B案 Liquid Glass型（12週カットの空とガラス・design-kits/liquid-glass.css）／vault＝C案 宝物庫（夜×金）／album＝D案 宝箱アルバム
+// ⚙の「見た目（お試し）」で選んだもの（この端末の localStorage nb_look）も読む。URLの ?look= が先（見比べページ用）
+const LOOK_TRY = [
+  { k:"", name:"今の見た目" },
+  { k:"liquid", name:"E ガラス全開" },
+  { k:"liquidlite", name:"E′ 軽い版" },
+  { k:"ios", name:"F iOS 26" },
+];
+const LOOK = (() => {
+  try {
+    const q = new URLSearchParams(location.search).get("look");
+    if (q) return q;
+    const saved = localStorage.getItem("nb_look") || "";
+    return LOOK_TRY.some(L => L.k === saved) ? saved : "";
+  } catch (e) { return ""; }
+})();
+// E/F 共通の Liquid Glass 部品（2026-10-18 拓也さん「もっとリキッドグラスっぽく」）。
+// 根拠＝Apple HIG Materials・Adopting Liquid Glass（ガラスは操作・ナビの層／文字の多い所は不透明寄りの regular／写真の上は35%の暗い層／スクロール端の効果で読みやすく）
+const lgGlass = (a, blur) => ({
+  background:`linear-gradient(135deg,rgba(255,255,255,${Math.min(a + 0.18, 0.95)}) 0%,rgba(255,255,255,${a}) 50%,rgba(255,255,255,${Math.min(a + 0.08, 0.95)}) 100%)`,
+  backdropFilter:`blur(${blur}px) saturate(190%)`, WebkitBackdropFilter:`blur(${blur}px) saturate(190%)`,
+  border:"1px solid rgba(255,255,255,0.55)",
+  // 縁の光＝左上の強いハイライト＋右下の弱いハイライト＋内側のにじみ＋下に落ちる影
+  boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.95), inset -1px -1px 0 rgba(255,255,255,0.45), inset 0 0 22px rgba(255,255,255,0.2), 0 16px 34px -18px rgba(50,30,110,0.45), 0 2px 6px rgba(50,30,110,0.06)",
+});
+const lgClearDark = { background:"rgba(0,0,0,0.35)", backdropFilter:"blur(10px) saturate(160%)", WebkitBackdropFilter:"blur(10px) saturate(160%)", border:"1px solid rgba(255,255,255,0.35)", boxShadow:"inset 1px 1px 0 rgba(255,255,255,0.45), 0 4px 12px rgba(0,0,0,0.22)" };
+const lgProminent = { background:"linear-gradient(135deg,rgba(139,84,245,0.9),rgba(107,139,255,0.86))", backdropFilter:"blur(14px) saturate(180%)", WebkitBackdropFilter:"blur(14px) saturate(180%)", border:"1px solid rgba(255,255,255,0.6)", boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.65), inset -1px -1px 0 rgba(255,255,255,0.25), 0 14px 30px -10px rgba(110,70,230,0.7)" };
+// 画面に固定する舞台：空（光の玉）＋上下のスクロール端（下を通る中身をぼかし、浮いた見出し・下タブの文字を読みやすくする）
+function lgStage({ sky, orbs, edge }) {
+  const st = document.createElement("style");
+  st.textContent = `
+    .lg-sky{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden;background:${sky}}
+    .lg-sky i{position:absolute;border-radius:50%;filter:blur(48px)}
+    .lg-edge{position:fixed;left:0;right:0;max-width:440px;margin:0 auto;pointer-events:none;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+    .lg-edge.b{bottom:0;height:118px;z-index:999;background:linear-gradient(to top,${edge} 18%,transparent);-webkit-mask-image:linear-gradient(to top,#000 40%,transparent);mask-image:linear-gradient(to top,#000 40%,transparent)}
+    .lg-edge.t{top:0;height:96px;z-index:898;background:linear-gradient(to bottom,${edge} 30%,transparent);-webkit-mask-image:linear-gradient(to bottom,#000 50%,transparent);mask-image:linear-gradient(to bottom,#000 50%,transparent)}`;
+  document.head.appendChild(st);
+  document.body.insertAdjacentHTML("beforeend",
+    `<div class="lg-sky" aria-hidden="true">${(orbs || []).map(o => `<i style="${o}"></i>`).join("")}</div><div class="lg-edge t" aria-hidden="true"></div><div class="lg-edge b" aria-hidden="true"></div>`);
+}
+if (LOOK === "glass") {
+  const G = { background:"rgba(255,255,255,0.36)", backdropFilter:"blur(20px) saturate(170%)", WebkitBackdropFilter:"blur(20px) saturate(170%)", border:"1px solid rgba(255,255,255,0.72)", boxShadow:"inset 0 1px 0 rgba(255,255,255,0.85), 0 14px 30px -18px rgba(70,45,110,0.5)" };
+  Object.assign(S, {
+    phone: { ...S.phone, backgroundAttachment:"fixed",
+      background:"radial-gradient(circle at 0% 0%, rgba(255,184,146,0.95) 0, transparent 42%), radial-gradient(circle at 100% 42%, rgba(195,173,255,0.9) 0, transparent 40%), radial-gradient(circle at 8% 96%, rgba(142,214,231,0.9) 0, transparent 46%), linear-gradient(180deg,#F7E2D7 0%,#EEE3F3 48%,#DDEDF2 100%)" },
+    cal: { ...S.cal, ...G, borderRadius:24 },
+    askBar: { ...S.askBar, ...G, borderRadius:99 },
+    wkCard: { ...S.wkCard, ...G },
+    taskSec: { ...S.taskSec, ...G },
+    taskSecHead: { ...S.taskSecHead, background:"rgba(255,255,255,0.4)" },
+    card: { ...S.card, ...G, background:"rgba(255,255,255,0.34)", border:"1px solid rgba(255,255,255,0.6)" },
+    cardTitle: { ...S.cardTitle, color:"#1E1B30" },
+    cardMeta: { ...S.cardMeta, color:"#595377" },
+    cardFoot: { ...S.cardFoot, borderTop:"1px solid rgba(255,255,255,0.6)" },
+    tab: { ...S.tab, background:"rgba(255,255,255,0.4)", border:"1px solid rgba(255,255,255,0.7)" },
+    sortWrap: { ...S.sortWrap, background:"rgba(255,255,255,0.35)" },
+    navBar: { ...S.navBar, ...G, left:10, right:10, bottom:10, height:64, borderRadius:24 },
+    fabDock: { ...S.fabDock, bottom:84 },
+  });
+} else if (LOOK === "vault") {
+  // C案 宝物庫（夜×金）＝名前の「⚔️クール（宝物庫・召喚）」側の温度。ライトモードの決定（2026-07）とは違う＝見比べ用の候補
+  const INK = { "#16161e":"#F4ECDC", "#1a1a24":"#F4ECDC", "#1a1a2e":"#F4ECDC", "#22222c":"#F4ECDC", "#2a2a38":"#EDE3CF", "#2a2440":"#EDE3CF", "#3a3a48":"#E2D8C4", "#3a3a44":"#E2D8C4", "#333":"#E2D8C4",
+    "#555":"#C9C0D8", "#666":"#C9C0D8", "#6a6a7a":"#B7B0CC", "#7a7a88":"#B7B0CC", "#7c7c8c":"#B7B0CC", "#777":"#B7B0CC", "#888":"#ABA4C2", "#8a8a9a":"#ABA4C2", "#8a8a96":"#ABA4C2",
+    "#9a9aaa":"#9F98B8", "#a0a0b0":"#9F98B8", "#a0a0aa":"#9F98B8", "#a0a0ae":"#9F98B8", "#a8a8b2":"#958EAE", "#aaa":"#958EAE", "#b0b0be":"#8D86A6", "#9c9caa":"#8D86A6", "#9a9aa6":"#8D86A6" };
+  const WHITE_A = /rgba\(255,\s*255,\s*255,\s*(0?\.\d+|1)\)/g;
+  const surf = v => /^(#fff|#ffffff|#fbfbfd|#fafafb|#f2f2f6|#f4f1ff|#f7f7fb|#f6f6f8)$/i.test(v.trim()) ? "rgba(36,30,62,0.95)" : v.replace(WHITE_A, "rgba(30,26,54,0.8)");
+  // 暗い文字→明るい文字、白い面→夜の面、に全部の部品をまとめて置き換える（シート・入力欄も含む）
+  for (const k of Object.keys(S)) {
+    const o = S[k];
+    if (!o || typeof o !== "object" || Array.isArray(o)) continue;
+    const n = { ...o };
+    if (typeof n.color === "string" && INK[n.color.toLowerCase()]) n.color = INK[n.color.toLowerCase()];
+    if (typeof n.background === "string") n.background = surf(n.background);
+    if (typeof n.border === "string") n.border = n.border.replace(WHITE_A, "rgba(232,194,106,0.24)").replace(/#e8e8ee|#ececf0|#eee\b|#d8d8e2/gi, "rgba(232,194,106,0.22)");
+    S[k] = n;
+  }
+  const GOLD = "linear-gradient(135deg,#F3D27A,#C9963B)";
+  Object.assign(S, {
+    phone: { ...S.phone, backgroundAttachment:"fixed",
+      background:"radial-gradient(circle at 85% 0%, rgba(232,194,106,0.24) 0, transparent 38%), radial-gradient(circle at 0% 55%, rgba(120,90,240,0.28) 0, transparent 45%), linear-gradient(180deg,#14112A 0%,#1B1638 55%,#0F0D20 100%)" },
+    card: { ...S.card, background:"rgba(30,26,54,0.82)", border:"1px solid rgba(232,194,106,0.30)", boxShadow:"0 10px 28px rgba(0,0,0,0.35)" },
+    cardFoot: { ...S.cardFoot, borderTop:"1px solid rgba(232,194,106,0.18)" },
+    boxHead: { ...S.boxHead, color:"#E8C26A" },
+    dayToday: { ...S.dayToday, background:GOLD, color:"#1E1530" },
+    agendaToday: { ...S.agendaToday, background:GOLD, color:"#1E1530" },
+    btnMain: { ...S.btnMain, background:GOLD, color:"#1E1530" },
+    keyBanner: { ...S.keyBanner, border:"1px solid rgba(232,194,106,0.4)" },
+    sortBtnOn: { ...S.sortBtnOn, background:"rgba(232,194,106,0.22)", color:"#F3D27A" },
+    navBar: { ...S.navBar, background:"rgba(20,17,40,0.94)", borderTop:"1px solid rgba(232,194,106,0.25)", boxShadow:"0 -6px 24px rgba(0,0,0,0.4)" },
+    navItemOn: { ...S.navItemOn, background:GOLD, color:"#1E1530", boxShadow:"0 4px 14px rgba(232,194,106,0.35)" },
+  });
+} else if (LOOK === "album") {
+  // D案 宝箱アルバム（クリーム×写真フレーム）＝名前の「💗愛着（宝箱・プリクラ手帳）」側の温度。丸ゴシックはiPhone（ヒラギノ丸ゴ）で効く
+  const CREAM = { background:"#FFFDF8", border:"1px solid #F1E3CF", boxShadow:"0 6px 18px rgba(170,120,60,0.12)", backdropFilter:"none", WebkitBackdropFilter:"none" };
+  Object.assign(S, {
+    bg: { ...S.bg, fontFamily:"'Hiragino Maru Gothic ProN','Hiragino Sans','Inter',sans-serif" },
+    phone: { ...S.phone, backgroundAttachment:"fixed",
+      background:"radial-gradient(circle at 12% 0%, rgba(255,186,200,0.5) 0, transparent 36%), radial-gradient(circle at 95% 32%, rgba(255,214,150,0.45) 0, transparent 38%), #FBF5EC" },
+    cal: { ...S.cal, ...CREAM },
+    taskSec: { ...S.taskSec, ...CREAM },
+    askBar: { ...S.askBar, background:"#FFF0F3", border:"1.5px dashed #F4A9BA", borderRadius:99 },
+    card: { ...S.card, ...CREAM, background:"#fff", padding:6, borderRadius:16, boxShadow:"0 8px 20px rgba(170,120,60,0.16)" },
+    dBar: { ...S.dBar, width:0 },
+    hero: { ...S.hero, borderRadius:11 },
+    cardMenuBtn: { ...S.cardMenuBtn, top:12, right:12 },
+    cardCatPill: { ...S.cardCatPill, transform:"rotate(-3deg)", border:"1.5px solid #fff", boxShadow:"0 2px 6px rgba(0,0,0,0.12)" },
+    cardFoot: { ...S.cardFoot, borderTop:"1px dashed #EADBC4" },
+    tab: { ...S.tab, background:"#fff", border:"1px solid #F1E3CF" },
+    navBar: { ...S.navBar, background:"rgba(255,253,248,0.98)", borderTop:"1px solid #F1E3CF" },
+    navItemOn: { ...S.navItemOn, background:"linear-gradient(135deg,#FF8FA3,#FFB36B)", boxShadow:"0 4px 12px rgba(255,130,120,0.35)" },
+  });
+} else if (LOOK === "liquid" || LOOK === "liquidlite") {
+  // E案 ガラス全開（Bの強化版）：空を鮮やかに・縁の光・ぼかし強め・見出しと下タブが浮く・カードは自分の写真が透けるガラス。
+  // Bの弱点を潰す＝補足文字・値段チップ・種類ピルを濃く／下タブは不透明寄り（HIGの regular）＋スクロール端の効果＋文字を濃く
+  lgStage({
+    sky:"linear-gradient(165deg,#FFD6C2 0%,#F6D3F0 42%,#D2E2FF 72%,#C8F0F4 100%)",
+    orbs:[
+      "width:min(80vw,420px);height:min(80vw,420px);left:-24vw;top:-14vw;background:#FF9A62;opacity:.9",
+      "width:min(60vw,320px);height:min(60vw,320px);right:-16vw;top:6vh;background:#FF6FB0;opacity:.6",
+      "width:min(72vw,400px);height:min(72vw,400px);right:-22vw;top:40vh;background:#9B6BFF;opacity:.75",
+      "width:min(86vw,460px);height:min(86vw,460px);left:-20vw;bottom:-24vw;background:#38D0EA;opacity:.8",
+    ],
+    edge:"rgba(244,232,248,0.8)",
+  });
+  // 種類の文字色を濃く（Bではガラスの上で薄く見えた）
+  const DEEP = { event:"#C62A58", task:"#6A3FD6", mono:"#9A5D00", basho:"#127A44", joho:"#0E6AA8", recipe:"#B8322A", news:"#3B4658", kyomi:"#9C1FB0" };
+  for (const k of Object.keys(DEEP)) if (CATS[k]) CATS[k].chipC = DEEP[k];
+  const PILL = { boxShadow:"inset 0 0 0 40px rgba(255,255,255,0.55), 0 1px 3px rgba(40,30,80,0.1)", border:"1px solid rgba(255,255,255,0.9)" };
+  const BTN = { boxShadow:"inset 0 0 0 60px rgba(255,255,255,0.5), inset 1px 1px 0 rgba(255,255,255,0.9), 0 2px 6px rgba(40,30,80,0.08)", border:"1px solid rgba(255,255,255,0.85)" };
+  Object.assign(S, {
+    phone: { ...S.phone, background:"transparent", overflow:"visible", overflowX:"clip" },
+    hd: { ...S.hd, position:"sticky", top:0, zIndex:900, paddingTop:10 },
+    gear: { ...lgGlass(0.5, 18), width:38, height:38, borderRadius:19, display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, color:"#2A2540", cursor:"pointer", lineHeight:1 },
+    tagline: { ...S.tagline, color:"#6E5AA8" },
+    cal: { ...S.cal, ...lgGlass(0.3, 26), borderRadius:28 },
+    calNavBtn: { ...S.calNavBtn, background:"rgba(255,255,255,0.55)", boxShadow:"inset 1px 1px 0 #fff", color:"#2A2540" },
+    dayNumMini: { ...S.dayNumMini, color:"#221E36" },
+    wkCard: { ...S.wkCard, ...lgGlass(0.3, 22), background:"linear-gradient(135deg,rgba(220,255,236,0.62),rgba(255,255,255,0.3))" },
+    wkGo: { ...S.wkGo, ...PILL, color:"#127A44" },
+    taskSec: { ...S.taskSec, ...lgGlass(0.32, 24) },
+    taskSecHead: { ...S.taskSecHead, background:"rgba(255,255,255,0.45)", boxShadow:"inset 1px 1px 0 rgba(255,255,255,0.9)" },
+    askBar: { ...S.askBar, ...lgGlass(0.42, 22), borderRadius:99, padding:"13px 16px" },
+    askBarText: { ...S.askBarText, color:"#5B2FD0" },
+    sortWrap: { ...S.sortWrap, ...lgGlass(0.3, 16), padding:3 },
+    sortBtn: { ...S.sortBtn, color:"#4A4566" },
+    sortBtnOn: { ...S.sortBtnOn, background:"rgba(255,255,255,0.92)", boxShadow:"inset 1px 1px 0 #fff, 0 2px 8px rgba(60,40,120,0.18)" },
+    tab: { ...S.tab, background:"rgba(255,255,255,0.5)", border:"1px solid rgba(255,255,255,0.8)", boxShadow:"inset 1px 1px 0 rgba(255,255,255,0.95), 0 4px 12px -6px rgba(60,40,120,0.3)" },
+    tabLbl: { ...S.tabLbl, color:"#3D3858", fontWeight:700 },
+    // カード＝ガラス＋地に自分の写真のぼかし（Apple Music の再生画面の考え方）。写真は内側に少し下げて縁の光を見せる
+    card: { ...S.card, ...lgGlass(0.24, 20), borderRadius:24 },
+    cardTint: { position:"absolute", left:"-20%", top:"-20%", width:"140%", height:"140%", objectFit:"cover", filter:"blur(28px) saturate(180%)", opacity:0.5, zIndex:0, pointerEvents:"none" },
+    dBar: { ...S.dBar, width:0 },
+    dCol: { ...S.dCol, position:"relative", zIndex:1 },
+    hero: { ...S.hero, margin:"6px 6px 0", borderRadius:18 },
+    cardBody: { ...S.cardBody, background:"rgba(255,255,255,0.4)", marginTop:6 },
+    cardTitle: { ...S.cardTitle, color:"#17132B" },
+    cardMeta: { ...S.cardMeta, color:"#3F3A5A", fontWeight:600 },
+    cardDate: { ...S.cardDate, color:"#4A4566" },
+    cardChip: { ...S.cardChip, ...PILL, fontWeight:800 },
+    cardCatPill: { ...S.cardCatPill, ...PILL },
+    cardFoot: { ...S.cardFoot, borderTop:"1px solid rgba(255,255,255,0.6)" },
+    cardIngBtn: { ...S.cardIngBtn, ...BTN, color:"#B8322A" },
+    cardSearchBtn: { ...S.cardSearchBtn, ...BTN, color:"#0E6AA8" },
+    cardMapBtn: { ...S.cardMapBtn, ...BTN, color:"#127A44" },
+    cardLink: { ...S.cardLink, ...BTN, color:"#0E6AA8" },
+    cardMenuBtn: { ...S.cardMenuBtn, ...lgClearDark },
+    expandBadge: { ...S.expandBadge, ...lgClearDark },
+    catCard: { ...S.catCard, ...lgGlass(0.4, 20) },
+    navBar: { ...S.navBar, ...lgGlass(0.62, 30), left:12, right:12, bottom:"calc(12px + env(safe-area-inset-bottom))", height:66, borderRadius:33, paddingBottom:0 },
+    navItem: { ...S.navItem, color:"#3A3554", margin:"6px 4px", borderRadius:27 },
+    navItemOn: { color:"#fff", background:"linear-gradient(135deg,rgba(122,66,236,0.96),rgba(88,116,248,0.93))", boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.55), inset -1px -1px 0 rgba(255,255,255,0.2), 0 6px 16px -4px rgba(110,70,230,0.55)" },
+    fabDock: { ...S.fabDock, bottom:"calc(90px + env(safe-area-inset-bottom))", marginBottom:0 },
+    navFab: { ...S.navFab, ...lgProminent },
+    sheet: { ...S.sheet, ...lgGlass(0.8, 30), background:"rgba(250,248,255,0.88)", borderRadius:"32px 32px 0 0" },
+  });
+  // 軽い版（見比べ用・2026-10-18）：①写真のぼかしは一度だけ作った小さな絵を敷く（CardTint）②カードの後ろの空はもともとぼけた光なので、
+  // カードごとの「後ろをぼかす」を外す ③画面から遠いカードは描かない（content-visibility）
+  if (LOOK === "liquidlite") Object.assign(S, {
+    card: { ...S.card, backdropFilter:"none", WebkitBackdropFilter:"none", contentVisibility:"auto", containIntrinsicSize:"auto 300px" },
+    cardTint: { position:"absolute", inset:0, opacity:0.5, zIndex:0, pointerEvents:"none" },
+    tintBaked: true,
+  });
+} else if (LOOK === "ios") {
+  // F案 iOS 26 本家どおり：Apple HIG「Liquid Glass は中身の層に使わない」に沿う＝カレンダー・カードはくっきり不透明、
+  // ガラスは操作の層だけ（浮いた見出しの⚙・デテコイ！の検索欄・並び替え・絞り込み・下タブ・放り込む・写真の上のボタン）
+  // 空は E と同じ色の淡い版＝カードの隙間と浮いたバーの奥に色が見え、ガラスらしさが出る（中身のカードは不透明のまま）
+  lgStage({
+    sky:"linear-gradient(165deg,#FBE9E0 0%,#F7E6F5 42%,#E6EEFF 72%,#E2F6F8 100%)",
+    orbs:[
+      "width:min(80vw,420px);height:min(80vw,420px);left:-24vw;top:-14vw;background:#FFB08A;opacity:.55",
+      "width:min(72vw,400px);height:min(72vw,400px);right:-22vw;top:40vh;background:#B79BFF;opacity:.45",
+      "width:min(86vw,460px);height:min(86vw,460px);left:-20vw;bottom:-24vw;background:#7FDDEE;opacity:.5",
+    ],
+    edge:"rgba(246,240,250,0.88)",
+  });
+  const SOLID = { background:"#FFFFFF", backdropFilter:"none", WebkitBackdropFilter:"none", border:"none", boxShadow:"0 1px 2px rgba(0,0,0,0.04), 0 8px 20px -10px rgba(30,30,60,0.14)" };
+  Object.assign(S, {
+    phone: { ...S.phone, background:"transparent", overflow:"visible", overflowX:"clip" },
+    hd: { ...S.hd, position:"sticky", top:0, zIndex:900, paddingTop:10 },
+    hdName: { ...S.hdName, fontSize:30, fontWeight:800, letterSpacing:"-0.03em" },
+    gear: { ...lgGlass(0.55, 18), width:38, height:38, borderRadius:19, display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, color:"#1C1C1E", cursor:"pointer", lineHeight:1 },
+    tagline: { ...S.tagline, color:"#8E8E93" },
+    cal: { ...S.cal, ...SOLID, borderRadius:22 },
+    taskSec: { ...S.taskSec, ...SOLID, borderRadius:20 },
+    wkCard: { ...S.wkCard, ...SOLID, borderRadius:20 },
+    askBar: { ...S.askBar, ...lgGlass(0.55, 22), borderRadius:99, padding:"13px 16px" },
+    askBarText: { ...S.askBarText, color:"#5B2FD0" },
+    sortWrap: { ...S.sortWrap, ...lgGlass(0.5, 16), padding:3 },
+    sortBtn: { ...S.sortBtn, color:"#3C3C43" },
+    sortBtnOn: { ...S.sortBtnOn, background:"#fff", boxShadow:"0 2px 8px rgba(0,0,0,0.12)" },
+    tab: { ...S.tab, background:"rgba(255,255,255,0.72)", border:"1px solid rgba(255,255,255,0.9)", boxShadow:"inset 1px 1px 0 #fff, 0 3px 10px -5px rgba(0,0,0,0.18)" },
+    tabLbl: { ...S.tabLbl, color:"#3C3C43", fontWeight:700 },
+    card: { ...S.card, ...SOLID, borderRadius:20 },
+    dBar: { ...S.dBar, width:0 },
+    cardTitle: { ...S.cardTitle, color:"#000", fontWeight:700 },
+    cardMeta: { ...S.cardMeta, color:"#6C6C70" },
+    cardFoot: { ...S.cardFoot, borderTop:"0.5px solid rgba(60,60,67,0.2)" },
+    cardMenuBtn: { ...S.cardMenuBtn, ...lgClearDark },
+    expandBadge: { ...S.expandBadge, ...lgClearDark },
+    catCard: { ...S.catCard, ...SOLID },
+    navBar: { ...S.navBar, ...lgGlass(0.66, 30), left:12, right:12, bottom:"calc(12px + env(safe-area-inset-bottom))", height:66, borderRadius:33, paddingBottom:0 },
+    navItem: { ...S.navItem, color:"#3C3C43", margin:"6px 4px", borderRadius:27 },
+    // 選択中＝2026-07-25 の決定「塗りピルで明示」を守る（Apple純正の色文字＋薄い台は控えめすぎる）。紫の塗り＋縁の光
+    navItemOn: { color:"#fff", background:"linear-gradient(135deg,rgba(122,66,236,0.96),rgba(88,116,248,0.93))", boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.55), inset -1px -1px 0 rgba(255,255,255,0.2), 0 6px 16px -4px rgba(110,70,230,0.55)" },
+    fabDock: { ...S.fabDock, bottom:"calc(90px + env(safe-area-inset-bottom))", marginBottom:0 },
+    navFab: { ...S.navFab, ...lgProminent },
+    sheet: { ...S.sheet, background:"rgba(248,248,250,0.92)", backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)", borderRadius:"34px 34px 0 0" },
+  });
+} else if (LOOK === "mind") {
+  // G案 写真主役の石垣（競合 mymind 型＝mymind.com の画面：写真をそのままの縦横比で積む・明朝の見出し・生成りの地に淡い夕焼け）。
+  // ⚠️見比べ用は CSS の段組みなので「上から下へ」並ぶ。本採用なら左右交互に並べる作りにする
+  const SERIF = "'Hiragino Mincho ProN','Yu Mincho','YuMincho','Noto Serif JP',serif";
+  const PAPER = { background:"#FFFFFF", backdropFilter:"none", WebkitBackdropFilter:"none", border:"1px solid #ECE9E2", boxShadow:"0 1px 2px rgba(60,40,20,0.05)" };
+  Object.assign(S, {
+    phone: { ...S.phone, background:"radial-gradient(ellipse at 50% -6%, rgba(255,140,90,0.30) 0, transparent 50%), radial-gradient(circle at 100% 22%, rgba(255,170,200,0.2) 0, transparent 40%), #F7F5F0" },
+    hdName: { ...S.hdName, fontFamily:SERIF, fontWeight:600, letterSpacing:"-0.02em", fontSize:27 },
+    tagline: { ...S.tagline, fontFamily:SERIF, color:"#9A8F80", fontWeight:500 },
+    cal: { ...S.cal, ...PAPER, borderRadius:16 },
+    taskSec: { ...S.taskSec, ...PAPER, borderRadius:16 },
+    wkCard: { ...S.wkCard, ...PAPER, borderRadius:16 },
+    askBar: { ...S.askBar, ...PAPER, borderRadius:14, padding:"16px", boxShadow:"0 8px 22px -14px rgba(60,40,20,0.3)" },
+    askBarText: { ...S.askBarText, fontFamily:SERIF, fontStyle:"italic", fontSize:15.5, fontWeight:500, color:"#8A8275" },
+    boxHead: { ...S.boxHead, fontFamily:SERIF, fontSize:15, letterSpacing:"0.02em", fontWeight:600 },
+    tab: { ...S.tab, background:"#fff", border:"1px solid #ECE9E2", backdropFilter:"none" },
+    tabLbl: { ...S.tabLbl, color:"#5A554C" },
+    wall: { ...S.wall, display:"block", columnCount:2, columnGap:10 },
+    card: { ...S.card, ...PAPER, borderRadius:12, minHeight:0, width:"100%", marginBottom:10, breakInside:"avoid", WebkitColumnBreakInside:"avoid", pageBreakInside:"avoid" },
+    dBar: { ...S.dBar, width:0 },
+    // 写真はそのままの縦横比（縦長のスクショは高さ300で切る）。YouTube の場面サムネ（4:3に黒帯）は16:9で切る
+    hero: { ...S.hero, height:"auto", padding:0, display:"block" },
+    heroNoImg: { height:36, opacity:0.5 },
+    cardHeroImg: { ...S.cardHeroImg, position:"relative", inset:"auto", height:"auto", minHeight:90, maxHeight:300, display:"block" },
+    ytAspect: { aspectRatio:"16 / 9", height:"auto" },
+    cardTitle: { ...S.cardTitle, fontFamily:SERIF, fontWeight:600, color:"#1F1D1A" },
+    cardMeta: { ...S.cardMeta, color:"#8A867C" },
+    cardFoot: { ...S.cardFoot, borderTop:"1px solid #F0EDE6" },
+    catCard: { ...S.catCard, ...PAPER },
+    navBar: { ...S.navBar, background:"rgba(255,255,255,0.97)", borderTop:"1px solid #ECE9E2", boxShadow:"none" },
+    navItem: { ...S.navItem, color:"#8A867C" },
+    navItemOn: { color:"#fff", background:"#1F1D1A", boxShadow:"0 4px 12px rgba(30,25,20,0.25)" },
+  });
+}
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
