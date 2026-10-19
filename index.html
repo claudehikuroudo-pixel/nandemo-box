@@ -268,78 +268,6 @@ function coverFx(pos) {
   return { objectPosition: `${pos.x}% ${pos.y}%`, transform: z !== 1 ? `scale(${z})` : undefined, transformOrigin: `${pos.x}% ${pos.y}%` };
 }
 
-// E案のカードの地＝自分の写真のぼかし。その場でぼかす（CSS filter）と弱い端末でカクつく（2026-10-18 実測：GPUなし・CPU×4で 60→51コマ/秒）ので、
-// 写真を一度だけ小さな絵（24×40）に縮めてぼかし・色を濃くし、それを引き伸ばして敷く＝スクロール中の負担は普通の背景画像と同じ。
-// 画面に近づいたカードの分だけ作る（120枚あっても最初に全部は作らない）。
-// 別サイトの写真で読み取りが許されない時は、種類の色で代わりに塗る（見た目だけの飾りなので、写真そのものの表示には影響しない）
-const TINT_DONE = new Map(), TINT_WAIT = new Map();
-function tintBlurPass(a, W, H, r) {
-  const t = new Float32Array(a.length);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    let s0 = 0, s1 = 0, s2 = 0;
-    for (let k = -r; k <= r; k++) { const j = (y * W + Math.min(W - 1, Math.max(0, x + k))) * 4; s0 += a[j]; s1 += a[j + 1]; s2 += a[j + 2]; }
-    const o = (y * W + x) * 4, n = 2 * r + 1; t[o] = s0 / n; t[o + 1] = s1 / n; t[o + 2] = s2 / n;
-  }
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    let s0 = 0, s1 = 0, s2 = 0;
-    for (let k = -r; k <= r; k++) { const j = (Math.min(H - 1, Math.max(0, y + k)) * W + x) * 4; s0 += t[j]; s1 += t[j + 1]; s2 += t[j + 2]; }
-    const o = (y * W + x) * 4, n = 2 * r + 1; a[o] = s0 / n; a[o + 1] = s1 / n; a[o + 2] = s2 / n; a[o + 3] = 255;
-  }
-}
-// 作るのは1枚ずつ・写真の読み込み(デコード)が終わってから・1枚ごとに一息おく（スクロール中にまとめて作るとカクつく＝2026-10-18 実測）
-const TINT_QUEUE = [];
-let tintBusy = false;
-function tintPump() {
-  if (tintBusy || !TINT_QUEUE.length) return;
-  tintBusy = true;
-  const { src, resolve } = TINT_QUEUE.shift();
-  const finish = out => { TINT_DONE.set(src, out); TINT_WAIT.delete(src); resolve(out); tintBusy = false; setTimeout(tintPump, 16); };
-  const img = new Image();
-  if (/^https?:/i.test(src) && !src.startsWith(location.origin)) img.crossOrigin = "anonymous";
-  img.src = src;
-  (img.decode ? img.decode() : new Promise((ok, ng) => { img.onload = ok; img.onerror = ng; })).then(() => {
-    let out = "";
-    try {
-      const W = 24, H = 40, c = document.createElement("canvas"); c.width = W; c.height = H;
-      const x = c.getContext("2d"); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
-      // カードと同じ縦長で写真の真ん中を切り出し、さらに1.4倍に寄せる（元の作り＝140%に広げてぼかす、と同じ見え方）
-      const r = Math.max(W / img.naturalWidth, H / img.naturalHeight), sw = W / r / 1.4, sh = H / r / 1.4;
-      x.drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2, sw, sh, 0, 0, W, H);
-      const d = x.getImageData(0, 0, W, H), a = d.data;
-      for (let i = 0; i < 3; i++) tintBlurPass(a, W, H, 4); // 3回の箱ぼかし≒ぼかし28px相当（1マス≒7px）
-      for (let i = 0; i < a.length; i += 4) { const l = 0.2126 * a[i] + 0.7152 * a[i + 1] + 0.0722 * a[i + 2]; for (let k = 0; k < 3; k++) a[i + k] = Math.max(0, Math.min(255, l + (a[i + k] - l) * 1.8)); } // 色を1.8倍濃く
-      x.putImageData(d, 0, 0);
-      out = c.toDataURL("image/png");
-    } catch (e) { out = ""; } // 別サイトの写真で読み取りが許されない
-    finish(out);
-  }, () => finish(""));
-}
-function bakeTint(src) {
-  if (TINT_DONE.has(src)) return Promise.resolve(TINT_DONE.get(src));
-  if (TINT_WAIT.has(src)) return TINT_WAIT.get(src);
-  const p = new Promise(resolve => { TINT_QUEUE.push({ src, resolve }); });
-  TINT_WAIT.set(src, p);
-  tintPump();
-  return p;
-}
-function CardTint({ src, style, fallback }) {
-  const ref = useRef(null);
-  const [baked, setBaked] = useState(() => TINT_DONE.get(src));
-  useEffect(() => {
-    if (TINT_DONE.has(src)) { setBaked(TINT_DONE.get(src)); return; }
-    setBaked(undefined);
-    let alive = true;
-    const run = () => bakeTint(src).then(u => { if (alive) setBaked(u); });
-    const el = ref.current;
-    if (!el || !("IntersectionObserver" in window)) { run(); return () => { alive = false; }; }
-    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); run(); } }, { rootMargin: "800px 0px" });
-    io.observe(el);
-    return () => { alive = false; io.disconnect(); };
-  }, [src]);
-  const bg = baked ? `url(${baked}) center / 100% 100% no-repeat` : baked === "" ? fallback : "none";
-  return <div ref={ref} aria-hidden="true" style={{ ...style, background: bg }} />;
-}
-
 // 材料リストの出どころ（正直に出す＝推定を本物と取り違えさせない）
 const ING_SRC = {
   page:   { label: "ページから",     color: "#1aa85c", bg: "rgba(47,216,122,0.14)" },
@@ -1960,10 +1888,9 @@ ${JSON.stringify(list)}
             const heroImg = coverOf(it);
             return (
               <div key={it.id} style={S.card}>
-                {/* 見た目のお試し（?look=liquid）の時だけ：カードの地に自分の写真をぼかして敷く。普段（S.cardTint なし）は何も出ない */}
-                {S.cardTint && heroImg && (S.tintBaked
-                  ? <CardTint src={heroImg} style={S.cardTint} fallback={c.grad} />
-                  : <img src={heroImg} alt="" aria-hidden="true" style={S.cardTint} onError={e=>{e.target.style.display='none';}} />)}
+                {/* カードの地に自分の写真をぼかして敷く（見た目＝E ガラス全開・2026-10-19 拓也さん決定） */}
+                {/* 140%に広げた写真は枠（カードと同じ大きさ）の中で切る＝カード自体がはみ出し分だけ内側にずれる余地を作らない */}
+                {heroImg && <div aria-hidden="true" style={S.cardTintWrap}><img src={heroImg} alt="" style={S.cardTint} onError={e=>{e.target.style.display='none';}} /></div>}
                 <div style={S.cardMenuBtn} onClick={e=>{e.stopPropagation(); setMenuId(menuId===it.id?null:it.id);}}>⋮</div>
                 <div style={{...S.dBar, background:c.grad}}/>
                 <div style={S.dCol}>
@@ -1972,7 +1899,7 @@ ${JSON.stringify(list)}
                   {/* 写真は高さを取って見せる（右上＝⋮、右下＝⤢ 拡大。高さ112で上下が重ならない）。写真なしは色の帯だけ */}
                   <div style={{...S.hero, ...(heroImg?{cursor:"pointer"}:S.heroNoImg), ...(heroImg?{}:{background:c.grad})}}
                     onClick={e => { if(!heroImg) return; if(it.sourceUrl){ handleImageSearch(e,it); } else { e.stopPropagation(); setLightbox(heroImg); } }}>
-                    {heroImg && <img src={heroImg} alt="" style={{...S.cardHeroImg, ...(S.ytAspect && ytOf(it) ? S.ytAspect : {}), ...coverFx(it.coverPos)}} onError={e=>{e.target.style.display='none';}} />}
+                    {heroImg && <img src={heroImg} alt="" style={{...S.cardHeroImg, ...coverFx(it.coverPos)}} onError={e=>{e.target.style.display='none';}} />}
                     {!heroImg && <span style={S.heroGlow}/>}
                     {heroImg && scanning !== it.id && (
                       <span style={S.expandBadge} onClick={e=>{e.stopPropagation(); setLightbox(heroImg);}}>⤢ 拡大</span>
@@ -2806,17 +2733,6 @@ ${JSON.stringify(list)}
                 入れると、YouTubeのレシピ動画を放り込んだ時に<b>概要欄に書いてある材料をそのまま</b>読みます（推定より正確）。無料（1日10,000回まで・動画1本＝1回）。キーはこの端末の中だけに保存されます。<br/>
                 取り方： <b>console.cloud.google.com</b>（Googleアカウント）→ プロジェクトを作る → 「APIとサービス」→「ライブラリ」で <b>YouTube Data API v3</b> を有効にする → 「認証情報」→「認証情報を作成」→「APIキー」→ できたキーの「キーを制限」で、使えるサイトを <b>claudehikuroudo-pixel.github.io</b>、使えるAPIを YouTube Data API v3 だけにする
               </div>
-              {/* 見た目のお試し（2026-10-18）：本物の箱のまま iPhone で重さ・見やすさを比べるため。押すと画面を読み直す。この端末だけ */}
-              <div style={S.fieldLabel}>見た目（お試し）</div>
-              <div style={S.lookRow}>
-                {LOOK_TRY.map(L => (
-                  <div key={L.k} style={{...S.lookBtn, ...(LOOK === L.k ? S.lookBtnOn : {})}}
-                    onClick={() => { try { if (L.k) localStorage.setItem("nb_look", L.k); else localStorage.removeItem("nb_look"); } catch (e) { alert("この端末では切り替えを保存できませんでした"); return; } location.reload(); }}>
-                    {L.name}
-                  </div>
-                ))}
-              </div>
-              <div style={S.help}>この端末だけで切り替わります（箱の中身はそのまま）。スクロールが重い・文字が読みにくいと感じたら「今の見た目」に戻せます。</div>
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setSettings(false)}>閉じる</button>
                 <button style={S.btnMain} onClick={saveSettings}>保存する</button>
@@ -2829,6 +2745,7 @@ ${JSON.stringify(list)}
   );
 }
 
+// 部品表。⚠️ 見た目＝E ガラス全開は、このファイル末尾の「見た目＝E」ブロックで上に重ねている（カード・カレンダー・下タブ・シート等）＝ここを直したら末尾も見る
 const S = {
   bg: { minHeight:"100vh", minHeight:"100dvh", display:"flex", justifyContent:"center", alignItems:"flex-start", padding:"0",
     fontFamily:"'Inter',-apple-system,'Hiragino Sans',sans-serif" },
@@ -3140,9 +3057,6 @@ const S = {
   attXSm: { fontSize:9.5, color:"#bcbcc8", fontWeight:700, padding:"0 1px" },
   attPin: { fontSize:14, color:"#a0a0b0", cursor:"pointer", padding:"2px 4px", flexShrink:0, alignSelf:"flex-start" },
   help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
-  lookRow: { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8 },
-  lookBtn: { padding:"11px 8px", borderRadius:12, background:"#f2f2f6", border:"1.5px solid transparent", fontSize:13, fontWeight:700, color:"#3a3a48", textAlign:"center", cursor:"pointer" },
-  lookBtnOn: { background:"#f4f1ff", border:"1.5px solid #8B54F5", color:"#5B2FD0" },
   // ── レシピの材料 ──
   cardIngBtn: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:4, marginTop:6, marginRight:0, padding:"7px 6px", borderRadius:9, background:"rgba(255,94,98,0.12)", border:"1px solid rgba(255,94,98,0.25)", color:"#d63f37", fontSize:12, fontWeight:800, cursor:"pointer" },
   recipeHero: { width:"100%", aspectRatio:"3 / 1", borderRadius:16, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:12, boxSizing:"border-box" },
@@ -3217,24 +3131,10 @@ const S = {
   revertLink: { fontSize:11.5, fontWeight:700, color:"#4a63d8", marginTop:6, cursor:"pointer" },
 };
 
-// ── 見た目のお試し（URLに ?look=… を付けた時だけ）。普段の見た目（A案）は変えない。拓也さんが見比べて決めるための切替（2026-10-18）
-//    glass＝B案 Liquid Glass型（12週カットの空とガラス・design-kits/liquid-glass.css）／vault＝C案 宝物庫（夜×金）／album＝D案 宝箱アルバム
-// ⚙の「見た目（お試し）」で選んだもの（この端末の localStorage nb_look）も読む。URLの ?look= が先（見比べページ用）
-const LOOK_TRY = [
-  { k:"", name:"今の見た目" },
-  { k:"liquid", name:"E ガラス全開" },
-  { k:"liquidlite", name:"E′ 軽い版" },
-  { k:"ios", name:"F iOS 26" },
-];
-const LOOK = (() => {
-  try {
-    const q = new URLSearchParams(location.search).get("look");
-    if (q) return q;
-    const saved = localStorage.getItem("nb_look") || "";
-    return LOOK_TRY.some(L => L.k === saved) ? saved : "";
-  } catch (e) { return ""; }
-})();
-// E/F 共通の Liquid Glass 部品（2026-10-18 拓也さん「もっとリキッドグラスっぽく」）。
+// ── 見た目＝E ガラス全開（2026-10-19 拓也さんが iPhone の本物の箱で E／E′軽い版／F を比べて決定）。
+//    S（上の部品表）の上にこのブロックで重ねている＝S のカード・カレンダー・下タブ等を直すときは、ここの上書きも必ず見る。
+//    選ばなかった案（B〜D・F・G・E′）と ?look= の切替の控え＝git の a403d91／フォルダ「_控え_見た目候補」。
+// Liquid Glass の部品（2026-10-18 拓也さん「もっとリキッドグラスっぽく」）。
 // 根拠＝Apple HIG Materials・Adopting Liquid Glass（ガラスは操作・ナビの層／文字の多い所は不透明寄りの regular／写真の上は35%の暗い層／スクロール端の効果で読みやすく）
 const lgGlass = (a, blur) => ({
   background:`linear-gradient(135deg,rgba(255,255,255,${Math.min(a + 0.18, 0.95)}) 0%,rgba(255,255,255,${a}) 50%,rgba(255,255,255,${Math.min(a + 0.08, 0.95)}) 100%)`,
@@ -3258,78 +3158,7 @@ function lgStage({ sky, orbs, edge }) {
   document.body.insertAdjacentHTML("beforeend",
     `<div class="lg-sky" aria-hidden="true">${(orbs || []).map(o => `<i style="${o}"></i>`).join("")}</div><div class="lg-edge t" aria-hidden="true"></div><div class="lg-edge b" aria-hidden="true"></div>`);
 }
-if (LOOK === "glass") {
-  const G = { background:"rgba(255,255,255,0.36)", backdropFilter:"blur(20px) saturate(170%)", WebkitBackdropFilter:"blur(20px) saturate(170%)", border:"1px solid rgba(255,255,255,0.72)", boxShadow:"inset 0 1px 0 rgba(255,255,255,0.85), 0 14px 30px -18px rgba(70,45,110,0.5)" };
-  Object.assign(S, {
-    phone: { ...S.phone, backgroundAttachment:"fixed",
-      background:"radial-gradient(circle at 0% 0%, rgba(255,184,146,0.95) 0, transparent 42%), radial-gradient(circle at 100% 42%, rgba(195,173,255,0.9) 0, transparent 40%), radial-gradient(circle at 8% 96%, rgba(142,214,231,0.9) 0, transparent 46%), linear-gradient(180deg,#F7E2D7 0%,#EEE3F3 48%,#DDEDF2 100%)" },
-    cal: { ...S.cal, ...G, borderRadius:24 },
-    askBar: { ...S.askBar, ...G, borderRadius:99 },
-    wkCard: { ...S.wkCard, ...G },
-    taskSec: { ...S.taskSec, ...G },
-    taskSecHead: { ...S.taskSecHead, background:"rgba(255,255,255,0.4)" },
-    card: { ...S.card, ...G, background:"rgba(255,255,255,0.34)", border:"1px solid rgba(255,255,255,0.6)" },
-    cardTitle: { ...S.cardTitle, color:"#1E1B30" },
-    cardMeta: { ...S.cardMeta, color:"#595377" },
-    cardFoot: { ...S.cardFoot, borderTop:"1px solid rgba(255,255,255,0.6)" },
-    tab: { ...S.tab, background:"rgba(255,255,255,0.4)", border:"1px solid rgba(255,255,255,0.7)" },
-    sortWrap: { ...S.sortWrap, background:"rgba(255,255,255,0.35)" },
-    navBar: { ...S.navBar, ...G, left:10, right:10, bottom:10, height:64, borderRadius:24 },
-    fabDock: { ...S.fabDock, bottom:84 },
-  });
-} else if (LOOK === "vault") {
-  // C案 宝物庫（夜×金）＝名前の「⚔️クール（宝物庫・召喚）」側の温度。ライトモードの決定（2026-07）とは違う＝見比べ用の候補
-  const INK = { "#16161e":"#F4ECDC", "#1a1a24":"#F4ECDC", "#1a1a2e":"#F4ECDC", "#22222c":"#F4ECDC", "#2a2a38":"#EDE3CF", "#2a2440":"#EDE3CF", "#3a3a48":"#E2D8C4", "#3a3a44":"#E2D8C4", "#333":"#E2D8C4",
-    "#555":"#C9C0D8", "#666":"#C9C0D8", "#6a6a7a":"#B7B0CC", "#7a7a88":"#B7B0CC", "#7c7c8c":"#B7B0CC", "#777":"#B7B0CC", "#888":"#ABA4C2", "#8a8a9a":"#ABA4C2", "#8a8a96":"#ABA4C2",
-    "#9a9aaa":"#9F98B8", "#a0a0b0":"#9F98B8", "#a0a0aa":"#9F98B8", "#a0a0ae":"#9F98B8", "#a8a8b2":"#958EAE", "#aaa":"#958EAE", "#b0b0be":"#8D86A6", "#9c9caa":"#8D86A6", "#9a9aa6":"#8D86A6" };
-  const WHITE_A = /rgba\(255,\s*255,\s*255,\s*(0?\.\d+|1)\)/g;
-  const surf = v => /^(#fff|#ffffff|#fbfbfd|#fafafb|#f2f2f6|#f4f1ff|#f7f7fb|#f6f6f8)$/i.test(v.trim()) ? "rgba(36,30,62,0.95)" : v.replace(WHITE_A, "rgba(30,26,54,0.8)");
-  // 暗い文字→明るい文字、白い面→夜の面、に全部の部品をまとめて置き換える（シート・入力欄も含む）
-  for (const k of Object.keys(S)) {
-    const o = S[k];
-    if (!o || typeof o !== "object" || Array.isArray(o)) continue;
-    const n = { ...o };
-    if (typeof n.color === "string" && INK[n.color.toLowerCase()]) n.color = INK[n.color.toLowerCase()];
-    if (typeof n.background === "string") n.background = surf(n.background);
-    if (typeof n.border === "string") n.border = n.border.replace(WHITE_A, "rgba(232,194,106,0.24)").replace(/#e8e8ee|#ececf0|#eee\b|#d8d8e2/gi, "rgba(232,194,106,0.22)");
-    S[k] = n;
-  }
-  const GOLD = "linear-gradient(135deg,#F3D27A,#C9963B)";
-  Object.assign(S, {
-    phone: { ...S.phone, backgroundAttachment:"fixed",
-      background:"radial-gradient(circle at 85% 0%, rgba(232,194,106,0.24) 0, transparent 38%), radial-gradient(circle at 0% 55%, rgba(120,90,240,0.28) 0, transparent 45%), linear-gradient(180deg,#14112A 0%,#1B1638 55%,#0F0D20 100%)" },
-    card: { ...S.card, background:"rgba(30,26,54,0.82)", border:"1px solid rgba(232,194,106,0.30)", boxShadow:"0 10px 28px rgba(0,0,0,0.35)" },
-    cardFoot: { ...S.cardFoot, borderTop:"1px solid rgba(232,194,106,0.18)" },
-    boxHead: { ...S.boxHead, color:"#E8C26A" },
-    dayToday: { ...S.dayToday, background:GOLD, color:"#1E1530" },
-    agendaToday: { ...S.agendaToday, background:GOLD, color:"#1E1530" },
-    btnMain: { ...S.btnMain, background:GOLD, color:"#1E1530" },
-    keyBanner: { ...S.keyBanner, border:"1px solid rgba(232,194,106,0.4)" },
-    sortBtnOn: { ...S.sortBtnOn, background:"rgba(232,194,106,0.22)", color:"#F3D27A" },
-    navBar: { ...S.navBar, background:"rgba(20,17,40,0.94)", borderTop:"1px solid rgba(232,194,106,0.25)", boxShadow:"0 -6px 24px rgba(0,0,0,0.4)" },
-    navItemOn: { ...S.navItemOn, background:GOLD, color:"#1E1530", boxShadow:"0 4px 14px rgba(232,194,106,0.35)" },
-  });
-} else if (LOOK === "album") {
-  // D案 宝箱アルバム（クリーム×写真フレーム）＝名前の「💗愛着（宝箱・プリクラ手帳）」側の温度。丸ゴシックはiPhone（ヒラギノ丸ゴ）で効く
-  const CREAM = { background:"#FFFDF8", border:"1px solid #F1E3CF", boxShadow:"0 6px 18px rgba(170,120,60,0.12)", backdropFilter:"none", WebkitBackdropFilter:"none" };
-  Object.assign(S, {
-    bg: { ...S.bg, fontFamily:"'Hiragino Maru Gothic ProN','Hiragino Sans','Inter',sans-serif" },
-    phone: { ...S.phone, backgroundAttachment:"fixed",
-      background:"radial-gradient(circle at 12% 0%, rgba(255,186,200,0.5) 0, transparent 36%), radial-gradient(circle at 95% 32%, rgba(255,214,150,0.45) 0, transparent 38%), #FBF5EC" },
-    cal: { ...S.cal, ...CREAM },
-    taskSec: { ...S.taskSec, ...CREAM },
-    askBar: { ...S.askBar, background:"#FFF0F3", border:"1.5px dashed #F4A9BA", borderRadius:99 },
-    card: { ...S.card, ...CREAM, background:"#fff", padding:6, borderRadius:16, boxShadow:"0 8px 20px rgba(170,120,60,0.16)" },
-    dBar: { ...S.dBar, width:0 },
-    hero: { ...S.hero, borderRadius:11 },
-    cardMenuBtn: { ...S.cardMenuBtn, top:12, right:12 },
-    cardCatPill: { ...S.cardCatPill, transform:"rotate(-3deg)", border:"1.5px solid #fff", boxShadow:"0 2px 6px rgba(0,0,0,0.12)" },
-    cardFoot: { ...S.cardFoot, borderTop:"1px dashed #EADBC4" },
-    tab: { ...S.tab, background:"#fff", border:"1px solid #F1E3CF" },
-    navBar: { ...S.navBar, background:"rgba(255,253,248,0.98)", borderTop:"1px solid #F1E3CF" },
-    navItemOn: { ...S.navItemOn, background:"linear-gradient(135deg,#FF8FA3,#FFB36B)", boxShadow:"0 4px 12px rgba(255,130,120,0.35)" },
-  });
-} else if (LOOK === "liquid" || LOOK === "liquidlite") {
+{
   // E案 ガラス全開（Bの強化版）：空を鮮やかに・縁の光・ぼかし強め・見出しと下タブが浮く・カードは自分の写真が透けるガラス。
   // Bの弱点を潰す＝補足文字・値段チップ・種類ピルを濃く／下タブは不透明寄り（HIGの regular）＋スクロール端の効果＋文字を濃く
   lgStage({
@@ -3368,7 +3197,8 @@ if (LOOK === "glass") {
     tabLbl: { ...S.tabLbl, color:"#3D3858", fontWeight:700 },
     // カード＝ガラス＋地に自分の写真のぼかし（Apple Music の再生画面の考え方）。写真は内側に少し下げて縁の光を見せる
     card: { ...S.card, ...lgGlass(0.24, 20), borderRadius:24 },
-    cardTint: { position:"absolute", left:"-20%", top:"-20%", width:"140%", height:"140%", objectFit:"cover", filter:"blur(28px) saturate(180%)", opacity:0.5, zIndex:0, pointerEvents:"none" },
+    cardTintWrap: { position:"absolute", inset:0, overflow:"hidden", borderRadius:"inherit", zIndex:0, pointerEvents:"none" },
+    cardTint: { position:"absolute", left:"-20%", top:"-20%", width:"140%", height:"140%", objectFit:"cover", filter:"blur(28px) saturate(180%)", opacity:0.5, pointerEvents:"none" },
     dBar: { ...S.dBar, width:0 },
     dCol: { ...S.dCol, position:"relative", zIndex:1 },
     hero: { ...S.hero, margin:"6px 6px 0", borderRadius:18 },
@@ -3392,92 +3222,6 @@ if (LOOK === "glass") {
     fabDock: { ...S.fabDock, bottom:"calc(90px + env(safe-area-inset-bottom))", marginBottom:0 },
     navFab: { ...S.navFab, ...lgProminent },
     sheet: { ...S.sheet, ...lgGlass(0.8, 30), background:"rgba(250,248,255,0.88)", borderRadius:"32px 32px 0 0" },
-  });
-  // 軽い版（見比べ用・2026-10-18）：①写真のぼかしは一度だけ作った小さな絵を敷く（CardTint）②カードの後ろの空はもともとぼけた光なので、
-  // カードごとの「後ろをぼかす」を外す ③画面から遠いカードは描かない（content-visibility）
-  if (LOOK === "liquidlite") Object.assign(S, {
-    card: { ...S.card, backdropFilter:"none", WebkitBackdropFilter:"none", contentVisibility:"auto", containIntrinsicSize:"auto 300px" },
-    cardTint: { position:"absolute", inset:0, opacity:0.5, zIndex:0, pointerEvents:"none" },
-    tintBaked: true,
-  });
-} else if (LOOK === "ios") {
-  // F案 iOS 26 本家どおり：Apple HIG「Liquid Glass は中身の層に使わない」に沿う＝カレンダー・カードはくっきり不透明、
-  // ガラスは操作の層だけ（浮いた見出しの⚙・デテコイ！の検索欄・並び替え・絞り込み・下タブ・放り込む・写真の上のボタン）
-  // 空は E と同じ色の淡い版＝カードの隙間と浮いたバーの奥に色が見え、ガラスらしさが出る（中身のカードは不透明のまま）
-  lgStage({
-    sky:"linear-gradient(165deg,#FBE9E0 0%,#F7E6F5 42%,#E6EEFF 72%,#E2F6F8 100%)",
-    orbs:[
-      "width:min(80vw,420px);height:min(80vw,420px);left:-24vw;top:-14vw;background:#FFB08A;opacity:.55",
-      "width:min(72vw,400px);height:min(72vw,400px);right:-22vw;top:40vh;background:#B79BFF;opacity:.45",
-      "width:min(86vw,460px);height:min(86vw,460px);left:-20vw;bottom:-24vw;background:#7FDDEE;opacity:.5",
-    ],
-    edge:"rgba(246,240,250,0.88)",
-  });
-  const SOLID = { background:"#FFFFFF", backdropFilter:"none", WebkitBackdropFilter:"none", border:"none", boxShadow:"0 1px 2px rgba(0,0,0,0.04), 0 8px 20px -10px rgba(30,30,60,0.14)" };
-  Object.assign(S, {
-    phone: { ...S.phone, background:"transparent", overflow:"visible", overflowX:"clip" },
-    hd: { ...S.hd, position:"sticky", top:0, zIndex:900, paddingTop:10 },
-    hdName: { ...S.hdName, fontSize:30, fontWeight:800, letterSpacing:"-0.03em" },
-    gear: { ...lgGlass(0.55, 18), width:38, height:38, borderRadius:19, display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, color:"#1C1C1E", cursor:"pointer", lineHeight:1 },
-    tagline: { ...S.tagline, color:"#8E8E93" },
-    cal: { ...S.cal, ...SOLID, borderRadius:22 },
-    taskSec: { ...S.taskSec, ...SOLID, borderRadius:20 },
-    wkCard: { ...S.wkCard, ...SOLID, borderRadius:20 },
-    askBar: { ...S.askBar, ...lgGlass(0.55, 22), borderRadius:99, padding:"13px 16px" },
-    askBarText: { ...S.askBarText, color:"#5B2FD0" },
-    sortWrap: { ...S.sortWrap, ...lgGlass(0.5, 16), padding:3 },
-    sortBtn: { ...S.sortBtn, color:"#3C3C43" },
-    sortBtnOn: { ...S.sortBtnOn, background:"#fff", boxShadow:"0 2px 8px rgba(0,0,0,0.12)" },
-    tab: { ...S.tab, background:"rgba(255,255,255,0.72)", border:"1px solid rgba(255,255,255,0.9)", boxShadow:"inset 1px 1px 0 #fff, 0 3px 10px -5px rgba(0,0,0,0.18)" },
-    tabLbl: { ...S.tabLbl, color:"#3C3C43", fontWeight:700 },
-    card: { ...S.card, ...SOLID, borderRadius:20 },
-    dBar: { ...S.dBar, width:0 },
-    cardTitle: { ...S.cardTitle, color:"#000", fontWeight:700 },
-    cardMeta: { ...S.cardMeta, color:"#6C6C70" },
-    cardFoot: { ...S.cardFoot, borderTop:"0.5px solid rgba(60,60,67,0.2)" },
-    cardMenuBtn: { ...S.cardMenuBtn, ...lgClearDark },
-    expandBadge: { ...S.expandBadge, ...lgClearDark },
-    catCard: { ...S.catCard, ...SOLID },
-    navBar: { ...S.navBar, ...lgGlass(0.66, 30), left:12, right:12, bottom:"calc(12px + env(safe-area-inset-bottom))", height:66, borderRadius:33, paddingBottom:0 },
-    navItem: { ...S.navItem, color:"#3C3C43", margin:"6px 4px", borderRadius:27 },
-    // 選択中＝2026-07-25 の決定「塗りピルで明示」を守る（Apple純正の色文字＋薄い台は控えめすぎる）。紫の塗り＋縁の光
-    navItemOn: { color:"#fff", background:"linear-gradient(135deg,rgba(122,66,236,0.96),rgba(88,116,248,0.93))", boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.55), inset -1px -1px 0 rgba(255,255,255,0.2), 0 6px 16px -4px rgba(110,70,230,0.55)" },
-    fabDock: { ...S.fabDock, bottom:"calc(90px + env(safe-area-inset-bottom))", marginBottom:0 },
-    navFab: { ...S.navFab, ...lgProminent },
-    sheet: { ...S.sheet, background:"rgba(248,248,250,0.92)", backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)", borderRadius:"34px 34px 0 0" },
-  });
-} else if (LOOK === "mind") {
-  // G案 写真主役の石垣（競合 mymind 型＝mymind.com の画面：写真をそのままの縦横比で積む・明朝の見出し・生成りの地に淡い夕焼け）。
-  // ⚠️見比べ用は CSS の段組みなので「上から下へ」並ぶ。本採用なら左右交互に並べる作りにする
-  const SERIF = "'Hiragino Mincho ProN','Yu Mincho','YuMincho','Noto Serif JP',serif";
-  const PAPER = { background:"#FFFFFF", backdropFilter:"none", WebkitBackdropFilter:"none", border:"1px solid #ECE9E2", boxShadow:"0 1px 2px rgba(60,40,20,0.05)" };
-  Object.assign(S, {
-    phone: { ...S.phone, background:"radial-gradient(ellipse at 50% -6%, rgba(255,140,90,0.30) 0, transparent 50%), radial-gradient(circle at 100% 22%, rgba(255,170,200,0.2) 0, transparent 40%), #F7F5F0" },
-    hdName: { ...S.hdName, fontFamily:SERIF, fontWeight:600, letterSpacing:"-0.02em", fontSize:27 },
-    tagline: { ...S.tagline, fontFamily:SERIF, color:"#9A8F80", fontWeight:500 },
-    cal: { ...S.cal, ...PAPER, borderRadius:16 },
-    taskSec: { ...S.taskSec, ...PAPER, borderRadius:16 },
-    wkCard: { ...S.wkCard, ...PAPER, borderRadius:16 },
-    askBar: { ...S.askBar, ...PAPER, borderRadius:14, padding:"16px", boxShadow:"0 8px 22px -14px rgba(60,40,20,0.3)" },
-    askBarText: { ...S.askBarText, fontFamily:SERIF, fontStyle:"italic", fontSize:15.5, fontWeight:500, color:"#8A8275" },
-    boxHead: { ...S.boxHead, fontFamily:SERIF, fontSize:15, letterSpacing:"0.02em", fontWeight:600 },
-    tab: { ...S.tab, background:"#fff", border:"1px solid #ECE9E2", backdropFilter:"none" },
-    tabLbl: { ...S.tabLbl, color:"#5A554C" },
-    wall: { ...S.wall, display:"block", columnCount:2, columnGap:10 },
-    card: { ...S.card, ...PAPER, borderRadius:12, minHeight:0, width:"100%", marginBottom:10, breakInside:"avoid", WebkitColumnBreakInside:"avoid", pageBreakInside:"avoid" },
-    dBar: { ...S.dBar, width:0 },
-    // 写真はそのままの縦横比（縦長のスクショは高さ300で切る）。YouTube の場面サムネ（4:3に黒帯）は16:9で切る
-    hero: { ...S.hero, height:"auto", padding:0, display:"block" },
-    heroNoImg: { height:36, opacity:0.5 },
-    cardHeroImg: { ...S.cardHeroImg, position:"relative", inset:"auto", height:"auto", minHeight:90, maxHeight:300, display:"block" },
-    ytAspect: { aspectRatio:"16 / 9", height:"auto" },
-    cardTitle: { ...S.cardTitle, fontFamily:SERIF, fontWeight:600, color:"#1F1D1A" },
-    cardMeta: { ...S.cardMeta, color:"#8A867C" },
-    cardFoot: { ...S.cardFoot, borderTop:"1px solid #F0EDE6" },
-    catCard: { ...S.catCard, ...PAPER },
-    navBar: { ...S.navBar, background:"rgba(255,255,255,0.97)", borderTop:"1px solid #ECE9E2", boxShadow:"none" },
-    navItem: { ...S.navItem, color:"#8A867C" },
-    navItemOn: { color:"#fff", background:"#1F1D1A", boxShadow:"0 4px 12px rgba(30,25,20,0.25)" },
   });
 }
 
