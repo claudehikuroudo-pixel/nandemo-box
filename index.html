@@ -129,7 +129,59 @@ const CATS = {
   recipe:{ label: "レシピ", en: "Recipe", grad: "linear-gradient(145deg,#ff9068,#ff5e62)", chip: "rgba(255,94,98,0.14)", chipC: "#e0483f", dot: "#ff6b5c" },
   news:  { label: "ニュース", en: "News", grad: "linear-gradient(145deg,#64748b,#475569)", chip: "rgba(100,116,139,0.15)", chipC: "#475569", dot: "#64748b" },
   kyomi: { label: "興味・関心", en: "Interest", grad: "linear-gradient(145deg,#e879f9,#c026d3)", chip: "rgba(217,70,239,0.13)", chipC: "#c026d3", dot: "#d946ef" },
+  // 支出（家計簿・2026-10-20 拓也さん「写真撮ったら金額読むのと、仕分け、その日の支出、家計簿」）。amount(円)・himoku(費目)・date(買った日)を持つ
+  money: { label: "支出", en: "Money", grad: "linear-gradient(145deg,#e6bd52,#b8861b)", chip: "rgba(201,154,46,0.16)", chipC: "#8a6510", dot: "#c99a2e" },
 };
+// 既定の種類（並び順もこれ）。利用者が作ったタブはこの後ろに並ぶ
+const BASE_CAT_KEYS = ["event", "task", "mono", "recipe", "basho", "joho", "news", "kyomi", "money"];
+const BASE_LABELS = Object.fromEntries(BASE_CAT_KEYS.map(k => [k, CATS[k].label]));
+// ── 自分で作るタブ・名前の変更（2026-10-20 拓也さん「タブを自分で作成して増やせるように、タブの名前を変更できるように」）──
+// 設定は IndexedDB の "cats" に {labels:{既定のkey:呼び名}, custom:[{key,label,pal}]} で持ち、書き出しにも入れる。
+// CATS をその場で書き換える（CATS を回している所＝分類を変える・選び直す・分類タブ・箱に聞く が自動でついてくる）
+const IDB_CATS_KEY = "cats";
+const CUSTOM_PAL = [
+  { grad: "linear-gradient(145deg,#2dd4bf,#0891b2)", chip: "rgba(13,148,136,0.14)", chipC: "#0F766E", dot: "#14b8a6" },
+  { grad: "linear-gradient(145deg,#818cf8,#4f46e5)", chip: "rgba(79,70,229,0.13)", chipC: "#4338CA", dot: "#6366f1" },
+  { grad: "linear-gradient(145deg,#fb7185,#e11d48)", chip: "rgba(225,29,72,0.12)", chipC: "#BE123C", dot: "#f43f5e" },
+  { grad: "linear-gradient(145deg,#a3e635,#65a30d)", chip: "rgba(101,163,13,0.15)", chipC: "#4D7C0F", dot: "#84cc16" },
+  { grad: "linear-gradient(145deg,#f472b6,#db2777)", chip: "rgba(219,39,119,0.12)", chipC: "#9D174D", dot: "#ec4899" },
+  { grad: "linear-gradient(145deg,#d6a77a,#a16207)", chip: "rgba(161,98,7,0.14)", chipC: "#854D0E", dot: "#ca8a04" },
+];
+const EMPTY_CAT_CONF = { labels: {}, custom: [] };
+// 外から来た設定（書き出しファイル等）を安全な形に直す
+function cleanCatConf(c) {
+  const labels = {}, custom = [], seen = new Set();
+  if (c && c.labels && typeof c.labels === "object")
+    for (const k of BASE_CAT_KEYS) { const v = String(c.labels[k] || "").trim().slice(0, 12); if (v) labels[k] = v; }
+  if (c && Array.isArray(c.custom))
+    for (const t of c.custom) {
+      const key = t && String(t.key || ""), label = t && String(t.label || "").trim().slice(0, 12);
+      if (!/^c_[\w-]{1,40}$/.test(key) || !label || seen.has(key)) continue;
+      seen.add(key); custom.push({ key, label, pal: Math.abs(Number(t.pal) || 0) % CUSTOM_PAL.length });
+    }
+  return { labels, custom };
+}
+function applyCatConf(conf) {
+  for (const k of BASE_CAT_KEYS) CATS[k].label = (conf.labels && conf.labels[k]) || BASE_LABELS[k];
+  for (const k of Object.keys(CATS)) if (k.startsWith("c_")) delete CATS[k];
+  for (const t of conf.custom || []) CATS[t.key] = { label: t.label, en: "Custom", custom: true, ...CUSTOM_PAL[t.pal % CUSTOM_PAL.length] };
+}
+const catKeys = () => [...BASE_CAT_KEYS, ...Object.keys(CATS).filter(k => k.startsWith("c_"))];
+const catOf = k => CATS[k] || CATS.joho; // 知らない種類（消したタブ等）でも画面が落ちないように
+
+// ── 家計簿 ──
+// 費目＝生活でよく使う物で仮に置いた（2026-10-20）。競合の既定費目の一覧は公式で確かめられなかった（Zaim のFAQに届かず・
+// マネーフォワード ME のヘルプは403）＝確かめたのは「レシートは保存前に確認・修正」「カレンダーに日ごとの支出」が3本共通という所まで
+const HIMOKU = ["食費", "外食", "日用品", "交通", "衣服", "美容", "趣味・娯楽", "交際費", "医療", "教育", "住まい", "通信", "その他"];
+const fmtYen = n => "¥" + Math.round(Number(n) || 0).toLocaleString("ja-JP");
+// 「¥1,280」「1280円」「１２８０」などを数字に。読めなければ 0
+function parseAmount(v) {
+  const s = String(v == null ? "" : v).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[^\d.]/g, "");
+  const n = Math.round(parseFloat(s));
+  return isFinite(n) && n > 0 ? n : 0;
+}
+const isMoney = it => it && it.category === "money";
+const fmtShortYen = n => n >= 100000 ? "¥" + (Math.round(n / 1000) / 10) + "万" : fmtYen(n); // カレンダーの小さなマス用
 
 // ── 初期サンプル（初回だけ表示。一度使い始めると保存内容に置き換わる）──
 const SEED = [
@@ -446,6 +498,212 @@ function idbDelAtt(key) {
   }));
 }
 
+// ── 書き出し・読み込み（バックアップ・2026-10-20）。箱の中身は端末の IndexedDB だけ＝機種変更・アイコン削除で消える。──
+// 全カード（写真・材料・予定の添付も）＋添付ファイル（IDBのblob）を1つの JSON にする。iPhone は共有シート→「ファイルに保存」。
+// APIキーは入れない（ファイルは人に渡せる＝キーが漏れる）。読み込んだ後に⚙で入れ直す。
+const BACKUP_APP = "detekoi", BACKUP_VER = 1, LS_LAST_BACKUP = "nb_last_backup";
+function dataUrlToBlob(s) {
+  const m = /^data:([^;,]*)((?:;[^;,]*)*?)(;base64)?,([\s\S]*)$/.exec(s || "");
+  if (!m) throw new Error("not a data url");
+  const type = m[1] || "application/octet-stream";
+  if (!m[3]) return new Blob([decodeURIComponent(m[4])], { type });
+  const bin = atob(m[4]);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Blob([u8], { type });
+}
+const blobKeysOf = items => {
+  const keys = new Set();
+  (items || []).forEach(it => (it.attachments || []).forEach(a => { if (isBlobAtt(a)) keys.add(a.bid); }));
+  return keys;
+};
+async function buildBackup(items, cats) {
+  const files = {}, missing = [];
+  for (const k of blobKeysOf(items)) {
+    let blob = null;
+    try { blob = await idbGetAtt(k); } catch (e) {}
+    if (!blob) { missing.push(k); continue; }           // 端末に無い添付は入れられない＝数を画面に出す
+    files[k] = { type: blob.type || "", data: await blobToDataUrl(blob) };
+  }
+  const now = new Date(), p = n => String(n).padStart(2, "0");
+  const json = JSON.stringify({ app: BACKUP_APP, kind: "backup", version: BACKUP_VER, exportedAt: now.toISOString(), count: items.length, items, files, cats: cats || EMPTY_CAT_CONF });
+  const name = `detekoi-backup-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.json`;
+  return {
+    file: new File([json], name, { type: "application/json" }),
+    count: items.length,
+    photos: items.filter(it => it._img || (it.cover && it.cover !== "none") || (it.attachments || []).some(a => a.t === "img")).length,
+    files: Object.keys(files).length, missing: missing.length,
+  };
+}
+// 読み込む前に中身を確かめる。読めない・違うファイルは理由つきで投げる（黙って空の箱にしない）
+function parseBackup(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) {
+    throw new Error("このファイルは読めませんでした。デテコイの書き出しファイルではないか、途中で壊れています（保存し直したファイルで試してください）。");
+  }
+  if (!obj || obj.app !== BACKUP_APP || !Array.isArray(obj.items))
+    throw new Error("デテコイの書き出しファイルではありません。⚙の「書き出す」で作ったファイル（detekoi-backup-….json）を選んでください。");
+  if (Number(obj.version) > BACKUP_VER)
+    throw new Error("新しい版のデテコイで書き出したファイルです。アプリを開き直して最新にしてから読み込んでください。");
+  const seen = new Set(), items = [];
+  let broken = 0;
+  for (const it of obj.items) {
+    const okId = it && (typeof it.id === "number" || typeof it.id === "string");
+    if (!it || typeof it !== "object" || !okId || typeof it.title !== "string" || seen.has(it.id)) { broken++; continue; }
+    seen.add(it.id); items.push(it);
+  }
+  if (!items.length) throw new Error("このファイルには読めるカードが1枚もありませんでした（壊れている可能性があります）。");
+  const files = {};
+  for (const [k, f] of Object.entries(obj.files && typeof obj.files === "object" ? obj.files : {})) {
+    try { files[k] = dataUrlToBlob(f && f.data); } catch (e) { /* 壊れた中身＝下で「読めない添付」に数える */ }
+  }
+  let lostFiles = 0; // カードが使う添付のうち、中身が無い・壊れているもの
+  items.forEach(it => (it.attachments || []).forEach(a => { if (isBlobAtt(a) && !files[a.bid]) lostFiles++; }));
+  // 自分で作ったタブ・呼び名（無い＝前の版のファイル）
+  const cats = obj.cats && typeof obj.cats === "object" ? cleanCatConf(obj.cats) : null;
+  return { items, files, broken, lostFiles, cats, exportedAt: String(obj.exportedAt || "") };
+}
+// mode: "add"＝今の箱に足す（同じidのカードは飛ばす＝この端末の方を残す）／"replace"＝今の箱と置き換える
+async function applyBackup(bk, mode, current) {
+  const have = new Set(current.map(it => it.id));
+  const incoming = mode === "add" ? bk.items.filter(it => !have.has(it.id)) : bk.items;
+  // 添付ファイルは新しい鍵で入れる（この端末の別の添付と鍵がぶつかって上書きしないように）
+  const rename = {}, stamp = Date.now();
+  let n = 0, lost = 0;
+  incoming.forEach(it => (it.attachments || []).forEach(a => { if (isBlobAtt(a) && !bk.files[a.bid]) lost++; }));
+  for (const k of blobKeysOf(incoming)) {
+    if (!bk.files[k]) continue;
+    const nk = `att:r${stamp}-${n++}`;
+    await idbPutAtt(nk, bk.files[k]);
+    rename[k] = nk;
+  }
+  const moved = incoming.map(it => !it.attachments ? it
+    : { ...it, attachments: it.attachments.map(a => isBlobAtt(a) && rename[a.bid] ? { ...a, bid: rename[a.bid] } : a) });
+  const idNum = it => typeof it.id === "number" ? it.id : 0;
+  const next = mode === "add" ? [...current, ...moved].sort((a, b) => idNum(b) - idNum(a)) : moved;
+  await idbSetItems(next);                              // 書けなかったら投げる＝今の箱はそのまま
+  if (mode === "replace") {                             // 置き換えた後に、もう誰も使わない古い添付だけ消す
+    const keep = blobKeysOf(next);
+    for (const k of blobKeysOf(current)) if (!keep.has(k)) await idbDelAtt(k);
+  }
+  return { next, added: moved.length, skipped: bk.items.length - incoming.length, files: n, lost };
+}
+
+// ── 「箱に聞く」に送る中身（2026-10-20）。前は箱の全カードを毎回 JSON（13桁のid・項目名つき）で送っていた＝箱が大きいほど1回が高い。──
+// ①1行1枚の短い形（番号 題名｜補足｜ラベル｜場所｜日付｜済｜保存日）。idの代わりに1からの番号を送り、答えの番号をidに戻す。
+// ②状況ボタン＝関係する種類だけ送る。箱に1枚も無ければAIを呼ばずに答える。
+// ③自由な質問で箱が大きい時＝全カードの題名（＋日付）は必ず送り（AIが題名の意味で気づけるように）、詳しい項目は手元で選んだ候補だけ。
+//   選び漏れたら答えの下の「全部を詳しく見て聞き直す」で全カードを詳しく送る。
+const ASK_DETAIL_ALL = 120;  // これ以下の枚数なら全部を詳しく送る
+const ASK_DETAIL_MAX = 60;   // 箱が大きい時に詳しく送る枚数
+const ASK_PRESETS = [
+  { label: "🍳 今晩なに作る？", q: "今晩なに作る？", cats: ["recipe"] },
+  { label: "🚗 週末どこ行く？", q: "週末どこ行く？", cats: ["basho", "event", "kyomi"], future: true },
+  { label: "✅ 今週やることは？", q: "今週やることは？", cats: ["task", "event"], week: true },
+  { label: "🛍 気になってた商品は？", q: "気になってた商品は？", cats: ["mono"] },
+  { label: "📰 あとで読むものある？", q: "あとで読むものある？", cats: ["joho", "news"] },
+];
+const ASK_INTENTS = [
+  { re: /レシピ|料理|作る|作り|ごはん|ご飯|献立|夕飯|晩ご飯|食べ|おかず/, cats: ["recipe"] },
+  { re: /行き|行く|行こ|お店|店|カフェ|バー|ランチ|ディナー|旅行|場所|スポット|出かけ|遊び/, cats: ["basho", "event", "kyomi"] },
+  { re: /買|欲し|ほしい|商品|値段|価格|いくら|円|セール/, cats: ["mono"] },
+  { re: /予定|いつ|今日|明日|明後日|今週|来週|週末|今月|来月|イベント|締切|期限/, cats: ["event", "task"], date: true },
+  { re: /やる|やること|タスク|しなきゃ|忘れ/, cats: ["task"] },
+  { re: /読む|読み|記事|ニュース|情報|調べ/, cats: ["joho", "news"] },
+  { re: /使った|支出|出費|家計|レシート|払った|買った|いくら/, cats: ["money"], date: true },
+];
+const ASK_STOP = /何だっけ|なんだっけ|だっけ|ありますか|ありましたっけ|ある|どこ|いつ|なに|何|教えて|おしえて|ですか|ますか|ください|この前|このまえ|この間|最近|さっき|あの|その|これ|それ|保存|入れた|って|てた|たい|いい|おすすめ/g;
+function askTerms(q) {
+  const runs = String(q || "").replace(ASK_STOP, " ").match(/[一-龯々〆ヵヶ]+|[ァ-ヴー]{2,}|[a-zA-Z0-9０-９Ａ-Ｚａ-ｚ]{2,}|[ぁ-ゖ]{3,}/g) || [];
+  const terms = new Map(); // 語 → 重み（長い語ほど重い）。漢字・カタカナの長い語は2文字ずつにも割って部分一致を拾う（英字・ひらがなは割ると雑音）
+  runs.forEach(r => {
+    const t = r.toLowerCase();
+    terms.set(t, Math.max(terms.get(t) || 0, Math.min(t.length, 4)));
+    if (t.length >= 4 && /^(?:[一-龯々〆ヵヶ]+|[ァ-ヴー]+)$/.test(t))
+      for (let i = 0; i < t.length - 1; i++) { const b = t.slice(i, i + 2); if (!terms.has(b)) terms.set(b, 0.4); }
+  });
+  return terms;
+}
+function buildAskPrompt(items, question, opts) {
+  opts = opts || {};
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const todayStr = toDateStr(now), weekEnd = toDateStr(new Date(now.getTime() + 7 * 864e5));
+  const year = todayStr.slice(0, 4);
+  const preset = opts.full ? null : opts.preset;
+  let pool = items || [];
+  if (preset) pool = pool.filter(it => {
+    if (preset.week) return (it.category === "task" && !it.done) || (it.date && !isMoney(it) && it.date >= todayStr && it.date <= weekEnd) || (it.category === "event" && !it.date);
+    if (!preset.cats.includes(it.category)) return false;
+    return !(preset.future && it.category === "event" && it.date && it.date < todayStr);
+  });
+  const recency = it => (it.added || "") + String(typeof it.id === "number" ? it.id : 0).padStart(16, "0");
+  let detailIds = null; // null＝全部詳しく
+  if (!opts.full && pool.length > ASK_DETAIL_ALL) {
+    const terms = askTerms(question);
+    const intents = ASK_INTENTS.filter(x => x.re.test(question));
+    const intentCats = new Set(intents.flatMap(x => x.cats));
+    const dateIntent = intents.some(x => x.date);
+    const dateFrom = toDateStr(new Date(now.getTime() - 7 * 864e5)), dateTo = toDateStr(new Date(now.getTime() + 31 * 864e5));
+    const scored = pool.map(it => {
+      const hay = [it.title, it.meta, it.chip, it.place, it.searchQuery, CATS[it.category] && CATS[it.category].label].filter(Boolean).join(" ").toLowerCase();
+      let s = 0;
+      terms.forEach((w, t) => { if (hay.includes(t)) s += w * 10; });
+      if (intentCats.has(it.category)) s += 3;
+      if (dateIntent && it.date && it.date >= dateFrom && it.date <= dateTo) s += 3;
+      return { it, s, r: recency(it) };
+    });
+    scored.sort((a, b) => b.s - a.s || (a.r < b.r ? 1 : a.r > b.r ? -1 : 0)); // 当たりの強い順→新しい順（当たりが少なければ新しいカードで埋める）
+    detailIds = new Set(scored.slice(0, ASK_DETAIL_MAX).map(x => x.it.id));
+  }
+  const md = d => { const p = String(d).split("-"); return p.length < 3 ? String(d) : (p[0] === year ? "" : p[0] + "/") + (+p[1]) + "/" + (+p[2]); };
+  const clip = (s, n) => { s = String(s || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
+  const idxToId = [];
+  const groups = {};
+  pool.forEach(it => { (groups[it.category] = groups[it.category] || []).push(it); });
+  const order = [...Object.keys(CATS), ...Object.keys(groups).filter(c => !CATS[c])];
+  const lines = [];
+  order.forEach(c => {
+    if (!groups[c]) return;
+    lines.push(`[${CATS[c] ? CATS[c].label : c}]`);
+    groups[c].forEach(it => {
+      idxToId.push(it.id);
+      const detail = !detailIds || detailIds.has(it.id);
+      const parts = [`${idxToId.length} ${clip(it.title, 60)}`];
+      if (detail) {
+        if (it.meta) parts.push(clip(it.meta, 80));
+        if (it.chip) parts.push(clip(it.chip, 24));
+        if (it.place && it.place !== it.meta) parts.push("場所:" + clip(it.place, 40));
+      }
+      if (it.date) parts.push("日付" + md(it.date) + (detail && it.time ? " " + it.time : ""));
+      if (it.done) parts.push("済");
+      if (detail && it.added) parts.push("保存" + md(it.added));
+      lines.push(parts.join("｜"));
+    });
+  });
+  const detailed = detailIds ? detailIds.size : pool.length;
+  const scopeNote = preset
+    ? `\n- 質問に関係する種類（${preset.cats.map(c => CATS[c] ? CATS[c].label : c).join("・")}）だけを送っています。`
+    : detailIds ? `\n- 箱が大きいので、全${pool.length}枚の題名を送り、質問に関係しそうな${detailed}枚だけ詳しい項目を付けています。題名だけの行も根拠にしてよい。` : "";
+  const wd = "日月火水木金土"[now.getDay()];
+  const prompt = `あなたはユーザー個人の「デテコイ」（気になったものを放り込む箱）に詳しいアシスタントです。
+下の[箱の中身]だけを根拠に、ユーザーの質問へ日本語で簡潔に答えてください。
+- 各行＝「番号 題名｜補足｜ラベル｜場所｜日付（予定日・期限・作る日）｜済（完了）｜保存日」。無い項目は省いている。[ ]は種類。
+- 該当する項目があれば、その題名を挙げて答える（複数あれば箇条書き）。
+- 見当たらなければanswerで「箱の中には見当たりませんでした」と正直に言い、idsは空配列。
+- 一覧に無い情報を作らない（ハレーション厳禁）。idsは必ず一覧にある番号だけ。
+- 今日は${todayStr}（${wd}）。「今週」等の相対表現は今日基準で判断する。
+- 提案系の質問（今晩なに作る?等）は、該当する項目から1〜3個おすすめして理由を一言。${scopeNote}
+
+[箱の中身]
+${lines.join("\n")}
+
+質問: ${question}
+
+以下のJSON形式だけを返してください。前置き・コードブロック不要:
+{"answer":"日本語の答え（簡潔・改行可）","ids":[該当する項目の番号の配列（関連が強い順・最大5個・無ければ空）]}`;
+  return { prompt, idxToId, total: (items || []).length, pool: pool.length, detailed, filtered: !!preset || !!detailIds };
+}
+
 // ── スキャン演出（AI解析のシグネチャー体験・C型＝輪郭トレース） ──
 // C＝輪郭トレース：被写体のフチを光の帯がなぞる＝「AIが中身を認識してる」を絵にする（このアプリの核）。
 //    ＋薄いレーザーが上から下に掃引して"読んでる"感を足す。
@@ -697,6 +955,28 @@ function App() {
   const [askAnswer, setAskAnswer] = useState("");
   const [askHits, setAskHits] = useState([]); // 答えに該当したカードid（行動ボタン付きで表示）
   const [planId, setPlanId] = useState(null); // 「予定に入れる」中のカードid
+  const [askScope, setAskScope] = useState(null); // 直前の質問で何枚を詳しく送ったか（絞った時は「全部を詳しく見て聞き直す」を出す）
+  // 書き出し・読み込み（⚙）
+  const [bkBusy, setBkBusy] = useState("");     // "export" / "import" / "apply"
+  const [bkOut, setBkOut] = useState(null);     // 書き出しの準備ができたファイル {file,count,photos,files,missing}
+  const [bkIn, setBkIn] = useState(null);       // 読み込んだファイルの中身（確かめ済み）
+  const [bkConfirm, setBkConfirm] = useState(false); // 上書きの最終確認中
+  const [bkMsg, setBkMsg] = useState(null);     // {t:"ok"|"err", s} 結果は必ず画面に出す
+  const [lastBackup, setLastBackup] = useState(() => { try { return localStorage.getItem(LS_LAST_BACKUP) || ""; } catch (e) { return ""; } });
+  const bkFileRef = useRef(null);
+  // タブ（自分で作る・名前を変える）
+  const [catConf, setCatConf] = useState(EMPTY_CAT_CONF);
+  const [tabEdit, setTabEdit] = useState(null);  // 編集中の下書き {labels, custom, newName, delKey}
+  // 家計簿
+  const [resultAmount, setResultAmount] = useState("");  // 放り込んだレシートの金額（直せる）
+  const [resultHimoku, setResultHimoku] = useState("その他");
+  const [addAmount, setAddAmount] = useState("");        // 日付タップ→支出を手で入れる
+  const [addHimoku, setAddHimoku] = useState("食費");
+  const [kakeiMonth, setKakeiMonth] = useState(null);    // 家計簿を開いている月 "YYYY-MM"（null＝閉じている）
+  const [moneyEdit, setMoneyEdit] = useState(null);      // 支出を直す {id, title, amount, himoku, date}
+  const addTitleRef = useRef(null);
+  const addAmountRef = useRef(null);
+  const focusHoldRef = useRef(null); // 日付タップ時にキーボードを出しておく仮の入力欄
   const [planDate, setPlanDate] = useState(()=>toDateStr(new Date()));
   // スケジュール追加（日付タップ→時刻＋やること/タスク）
   const [addDay, setAddDay] = useState(null); // タップした日付(YYYY-MM-DD)
@@ -763,11 +1043,23 @@ function App() {
     (async () => {
       let data = null;
       try { data = await idbGetItems(); } catch (e) { /* IDB不可の環境 */ }
+      try {  // 自分で作ったタブ・呼び名（カードより先に当てる＝最初の描画から正しい名前で出す）
+        const c = await idbGetAtt(IDB_CATS_KEY);
+        if (c) { const cc = cleanCatConf(c); applyCatConf(cc); setCatConf(cc); }
+      } catch (e) { /* 無ければ既定のまま */ }
       if (!Array.isArray(data)) data = loadItems(); // 旧localStorageのデータ or SEED
       setItems(data);
       loadedRef.current = true;
     })();
   }, []);
+  // 追加シートが出たら本物の入力欄へフォーカスを移し、仮の入力欄を片付ける
+  useEffect(() => {
+    if (!addDay) return;
+    const el = addType === "money" ? addAmountRef.current : addTitleRef.current;
+    if (el) { try { el.focus(); } catch (e) {} }
+    const tmp = focusHoldRef.current; focusHoldRef.current = null;
+    if (tmp) setTimeout(() => tmp.remove(), 300);
+  }, [addDay]);
   // items変更をIndexedDBへ永続化（数百MB＝画像を貯めても消えない）。失敗時のみlocalStorageへ退避。
   useEffect(() => {
     if (!loadedRef.current || items == null) return;
@@ -814,7 +1106,131 @@ function App() {
       calScrollRef.current.scrollLeft = calScrollRef.current.offsetWidth * next;
     }
   }
-  function openSettings() { setKeyDraft(apiKey); setYtKeyDraft(ytKey); setSettings(true); }
+  // タブの設定を当てて保存（失敗は黙らず出す）
+  function saveCatConf(conf) {
+    const c = cleanCatConf(conf);
+    applyCatConf(c); setCatConf(c);
+    idbPutAtt(IDB_CATS_KEY, c).catch(e => alert("タブの設定を保存できませんでした（" + ((e && e.message) || e) + "）。もう一度試してください。"));
+  }
+  function openTabEdit() {
+    setTabEdit({ labels: Object.fromEntries(BASE_CAT_KEYS.map(k => [k, catConf.labels[k] || BASE_LABELS[k]])), custom: catConf.custom.map(t => ({ ...t })), newName: "", delKey: null });
+  }
+  function addCustomTab() {
+    const name = tabEdit.newName.trim().slice(0, 12);
+    if (!name) return;
+    const used = new Set(tabEdit.custom.map(t => t.pal));
+    const pal = [...CUSTOM_PAL.keys()].find(i => !used.has(i)) ?? tabEdit.custom.length % CUSTOM_PAL.length;
+    setTabEdit({ ...tabEdit, custom: [...tabEdit.custom, { key: "c_" + Date.now().toString(36), label: name, pal }], newName: "" });
+  }
+  function saveTabEdit() {
+    const t = tabEdit;
+    // 書きかけの新しいタブ名も作る（「＋ 作る」を押し忘れても消えない）
+    const pending = t.newName.trim() ? [{ key: "c_" + Date.now().toString(36), label: t.newName.trim().slice(0, 12), pal: t.custom.length % CUSTOM_PAL.length }] : [];
+    // 名前を空にしたタブは消さずに元の名前へ戻す（消すのは🗑だけ）
+    const custom = [...t.custom.map(x => ({ ...x, label: x.label.trim() || (catConf.custom.find(y => y.key === x.key) || {}).label || "タブ" })), ...pending];
+    const labels = {};
+    for (const k of BASE_CAT_KEYS) { const v = String(t.labels[k] || "").trim(); if (v && v !== BASE_LABELS[k]) labels[k] = v; }
+    const gone = catConf.custom.filter(x => !custom.some(y => y.key === x.key)).map(x => x.key);
+    // 消したタブのカードは「情報」へ（カードは消さない）
+    if (gone.length) setItems(prev => prev.map(it => gone.includes(it.category) ? { ...it, category: "joho" } : it));
+    if (gone.includes(filter)) setFilter("all");
+    saveCatConf({ labels, custom });
+    setTabEdit(null);
+  }
+
+  function openSettings() {
+    setKeyDraft(apiKey); setYtKeyDraft(ytKey); setSettings(true);
+    setBkOut(null); setBkIn(null); setBkConfirm(false); setBkMsg(null);
+  }
+
+  // ── 書き出し：①ファイルを作る（時間がかかる）→②「保存・共有する」を押す。
+  // iPhone の共有シートは「押した直後」でないと開かない（待ち時間を挟むと断られる）ので2段にしている。
+  async function prepareExport() {
+    if (bkBusy || !items) return;
+    setBkBusy("export"); setBkMsg(null); setBkOut(null); setBkIn(null); setBkConfirm(false);
+    try { setBkOut(await buildBackup(items, catConf)); }
+    catch (e) { setBkMsg({ t: "err", s: "書き出しのファイルを作れませんでした（" + ((e && e.message) || e) + "）。もう一度試してください。" }); }
+    finally { setBkBusy(""); }
+  }
+  function markBackedUp() {
+    const s = new Date().toISOString();
+    setLastBackup(s);
+    try { localStorage.setItem(LS_LAST_BACKUP, s); } catch (e) {}
+  }
+  function downloadFile(f) {
+    const url = URL.createObjectURL(f);
+    const a = document.createElement("a");
+    a.href = url; a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  async function shareExport() {
+    const f = bkOut && bkOut.file;
+    if (!f) return;
+    let why = "";
+    if (navigator.canShare && navigator.share) {
+      let ok = false;
+      try { ok = navigator.canShare({ files: [f] }); } catch (e) { ok = false; }
+      if (ok) {
+        try {
+          await navigator.share({ files: [f], title: "デテコイのバックアップ" });
+          markBackedUp();
+          setBkMsg({ t: "ok", s: `共有シートに渡しました（${f.name}）。「ファイルに保存」を選んだ時は、ファイル App の保存先にこのファイルがあるか確かめてください。` });
+          return;
+        } catch (e) {
+          if (e && e.name === "AbortError") { setBkMsg({ t: "err", s: "共有をやめました。まだどこにも保存されていません。" }); return; }
+          why = "共有シートが使えなかったので";
+        }
+      } else why = "この端末では共有シートでファイルを渡せないので";
+    } else why = "このブラウザには共有シートが無いので";
+    try {
+      downloadFile(f);
+      markBackedUp();
+      setBkMsg({ t: "ok", s: `${why}、ダウンロードとして保存しました（${f.name}）。ダウンロードの保存先（iPhone は ファイル App →「ダウンロード」）にあるか確かめてください。` });
+    } catch (e) {
+      setBkMsg({ t: "err", s: "保存できませんでした（" + ((e && e.message) || e) + "）。" });
+    }
+  }
+  // ── 読み込み：ファイルを選ぶ→中身を確かめて見せる→「足す」か「上書き」を選ぶ
+  async function pickBackup(e) {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    setBkBusy("import"); setBkMsg(null); setBkIn(null); setBkOut(null); setBkConfirm(false);
+    try {
+      const text = f.text ? await f.text() : await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsText(f); });
+      setBkIn({ ...parseBackup(text), name: f.name, size: f.size });
+    } catch (err) {
+      setBkMsg({ t: "err", s: (err && err.message) || "このファイルは読めませんでした。" });
+    } finally { setBkBusy(""); }
+  }
+  async function applyImport(mode) {
+    if (!bkIn || bkBusy) return;
+    setBkBusy("apply"); setBkMsg(null);
+    try {
+      const r = await applyBackup(bkIn, mode, items || []);
+      // タブ：上書き＝ファイルのとおり／足す＝この端末の呼び名を残し、無いタブだけ足す
+      if (bkIn.cats) {
+        const have = new Set(catConf.custom.map(t => t.key));
+        saveCatConf(mode === "replace" ? bkIn.cats
+          : { labels: { ...bkIn.cats.labels, ...catConf.labels }, custom: [...catConf.custom, ...bkIn.cats.custom.filter(t => !have.has(t.key))] });
+      }
+      const maxId = Math.max(0, ...r.next.map(it => typeof it.id === "number" ? it.id : 0));
+      if (maxId >= nextId.current) nextId.current = maxId + 1;   // この後に入れるカードのidがぶつからないように
+      setItems(r.next);
+      const warn = [];
+      if (bkIn.broken) warn.push(`壊れていた（または重複していた）カード${bkIn.broken}枚は入れていません`);
+      if (r.lost) warn.push(`添付ファイル${r.lost}個は読めず入っていません`);
+      setBkMsg({ t: warn.length ? "warn" : "ok", s: (mode === "add"
+        ? `読み込みました：${r.added}枚を足しました` + (r.skipped ? `（同じカード${r.skipped}枚は飛ばして、この端末の方を残しました）` : "")
+        : `読み込みました：箱を${r.added}枚に置き換えました`) + (r.files ? `・添付ファイル${r.files}個` : "") + "。" + (warn.length ? "\n⚠ " + warn.join("。") + "。" : "") });
+      setBkIn(null); setBkConfirm(false);
+    } catch (err) {
+      setBkMsg({ t: "err", s: "読み込めませんでした（" + ((err && err.message) || err) + "）。今の箱はそのままです。" });
+    } finally { setBkBusy(""); }
+  }
+  const fmtBkDate = iso => { const d = new Date(iso); return isNaN(d) ? "" : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
+  const fmtMB = b => b >= 1048576 ? (b / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(b / 1024)) + "KB";
   function saveSettings() {
     const k = keyDraft.trim();
     setApiKey(k);
@@ -995,6 +1411,7 @@ function App() {
 - 場所・店・カフェ・レストランなら：店名・場所・ジャンル
 - **イベント案内・チラシ・予定のスクショ（ライブ/セミナー/勉強会/予約確認/招待状など）なら：イベント名・日付・開始/終了時刻・会場/場所を必ず読み取る**（＝予定として登録できるように）
 - **料理・レシピ・料理動画の画面なら：料理名を特定し、画面に材料の一覧が写っていれば材料と分量を全部読み取る**（＝買い物リストにできるように）
+- **レシート・領収書・支払い完了画面・購入明細なら：合計金額（税込）・店名・日付を読み取る**（＝家計簿につけられるように）。小計や税・お預かり・お釣りと取り違えない
 - スクショ・SNS・記事なら：タイトルと主要情報
 - その他：具体的な名称・特徴
 「腕時計」「バッグ」「スニーカー」等の**一般名詞だけで終わらせない**。必ず固有名詞・型番まで踏み込む。
@@ -1012,8 +1429,13 @@ function App() {
 放り込まれた内容:\n"""${contextText}"""`
         : `放り込まれたテキスト:\n"""${contextText}"""`;
 
+      // 自分で作ったタブ・付けた呼び名もAIに見せる（名前が中身のヒント）。箱に入れる前の画面で必ず確かめて選び直せる
+      const catPromptExtra = [
+        ...BASE_CAT_KEYS.filter(k => CATS[k].label !== BASE_LABELS[k]).map(k => `  （${k} はユーザーの呼び名「${CATS[k].label}」）`),
+        ...catKeys().filter(k => k.startsWith("c_")).map(k => `- ${k}: ユーザーが自分で作ったタブ「${CATS[k].label}」（名前が中身のヒント。名前にはっきり当てはまる時は上の既定より優先）`),
+      ].join("\n");
       const prompt = `あなたは「デテコイ」（気になったものを何でも放り込み、必要な時に呼び出せる箱）アプリの仕分けエンジンです。
-ユーザーが放り込んだ内容を読み、5カテゴリのどれかに分類してJSONだけ返してください。
+ユーザーが放り込んだ内容を読み、下のカテゴリのどれか1つに分類してJSONだけ返してください。
 
 カテゴリ定義:
 - event: 日時のあるイベント・ウェビナー・講座・セミナー・配信
@@ -1024,7 +1446,8 @@ function App() {
 - joho: あとで読む記事・動画・ハウツー・実用メモ
 - news: ニュース・時事・世間の話題・速報
 - kyomi: 趣味・関心事・なんとなく気になるもの（実用でも予定でもない"好き"）
-
+- money: 支出の記録（レシート・領収書・支払い完了画面・購入明細・カード利用通知）＝もう払ったお金。まだ買っていない欲しい物は mono
+${catPromptExtra}
 ${imgInstruction}
 
 精度ルール（最重要・ここの精度がアプリの価値）：
@@ -1037,6 +1460,7 @@ ${imgInstruction}
 - **画像/本文にSNSのID(@〜)やURLが"はっきり写っている"なら、その本人ページのURLを組み立ててlinkに入れる**（スクショから直接そのページへ飛べるようにするため）：
   Instagram=https://www.instagram.com/<id>/ ／ X(Twitter)=https://x.com/<id> ／ TikTok=https://www.tiktok.com/@<id> ／ YouTube=https://www.youtube.com/@<handle> ／ その他の明示URLはそのまま記載。
   **⚠️絶対に推測・記憶で補完しない。画面に写っている文字だけを根拠にする。読み取れない・自信がない場合は必ず空文字**（存在しないアカウントに飛ばすのは事故）。IDは@を除いた正確な綴りで。
+- **支出(money)のときは家計簿につけられるように**：amount＝合計金額（税込・円・数字だけ）、titleは店名（読めなければ「何の支払いか」）、dateは買った日（レシートの日付。読めなければ空文字）、himokuは次から1つ：${HIMOKU.join("/")}。金額が読めなければ amount は空文字（推測で作らない）
 - **レシピ(recipe)のときは材料を ingredients に入れ、出どころを ingSrc に正直に書く**（買い物リストに使う）：
   - 本文・説明・[YouTube概要欄]・画像に材料が書いてある → **書いてある材料だけ**を、分量も原文どおり写す（調味料・「適量」「少々」も含める）。本文や説明・概要欄から＝"page"、画像に写った材料表から＝"screen"
   - 1つの概要欄・ページに**複数の料理の材料**が並んでいる時は、titleにした料理の分だけ写す（どれか1つに決められなければ全部写す）
@@ -1045,7 +1469,7 @@ ${imgInstruction}
   - レシピ以外のカテゴリでは ingredients は空配列
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"event|task|mono|recipe|basho|joho|news|kyomi","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスクのみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","ingredients":[{"name":"材料名","qty":"分量(原文どおり。なければ空文字)"}],"ingSrc":"page|screen|guess のどれか。材料が空なら空文字","servings":"何人分(分かれば。例:2人分)。なければ空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
+{"category":"${catKeys().join("|")}","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスク・支出のみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","ingredients":[{"name":"材料名","qty":"分量(原文どおり。なければ空文字)"}],"ingSrc":"page|screen|guess のどれか。材料が空なら空文字","servings":"何人分(分かれば。例:2人分)。なければ空文字","amount":"支出のときだけ合計金額(円・数字だけ。例 1280)。それ以外・読めなければ空文字","himoku":"支出のときだけ費目(上の一覧から1つ)。それ以外は空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
 
       const content = [];
       // 見せる画像＝放り込まれた写真。無ければYouTubeのサムネ（題名が曖昧でも料理や商品が写っている）
@@ -1087,6 +1511,15 @@ ${imgInstruction}
         } catch (e) { parsed.link = ""; parsed.linkLabel = ""; }
       } else { parsed.link = ""; parsed.linkLabel = ""; }
       if (parsed.date) setResultDate(parsed.date);
+      // 支出：金額は数字に直して直せる欄へ。読めなかった事実は画面に出す（推測で埋めない）
+      // （支出以外は、値段のラベルがあればそれを下書きに＝選び直しで「支出」にした時に打ち直さなくて済む）
+      const amt = parseAmount(parsed.amount) || (parsed.category !== "money" && /[¥￥円]/.test(parsed.chip || "") ? parseAmount(parsed.chip) : 0);
+      setResultAmount(amt ? String(amt) : "");
+      setResultHimoku(HIMOKU.includes(parsed.himoku) ? parsed.himoku : "その他");
+      if (parsed.category === "money") {
+        if (!parsed.date) setResultDate(toDateStr(new Date()));
+        if (!amt) notes.push("※金額が読み取れませんでした。下の金額の欄に入れてください。");
+      }
       setResultTime(parsed.time || "");
       setResultEnd(parsed.endTime || "");
       setResultPlace(parsed.place || "");
@@ -1147,35 +1580,21 @@ ${imgInstruction}
 
   // 箱の中身にAIが答える（＝生活版NotebookLMの核。貯めた項目のテキストだけを根拠に回答）
   // 答えと一緒に該当カードのidも返させ、カード＋行動ボタン（開く/地図/予定化）を表示する＝「想起→行動」
-  async function askBox(question) {
+  // opts.preset＝状況ボタン（関係する種類だけ送る）／opts.full＝全カードを詳しく送る（「全部を詳しく見て聞き直す」）
+  async function askBox(question, opts) {
     if (!apiKey) { setError("先に右上の⚙からAPIキーを設定してください。"); setAskOpen(false); openSettings(); return; }
     if (!question.trim()) return;
-    setAskBusy(true); setAskAnswer(""); setAskHits([]); setPlanId(null);
+    setAskBusy(true); setAskAnswer(""); setAskHits([]); setPlanId(null); setAskScope(null);
     try {
-      const list = (items || []).map(it => ({
-        id: it.id,
-        title: it.title,
-        種類: CATS[it.category] ? CATS[it.category].label : it.category,
-        meta: it.meta || undefined,
-        chip: it.chip || undefined,
-        date: it.date || undefined,
-        added: it.added || undefined,
-      }));
-      const prompt = `あなたはユーザー個人の「デテコイ」（気になったものを放り込む箱）に詳しいアシスタントです。
-以下はユーザーが箱に貯めた項目一覧（JSON）です。ユーザーの質問に、この一覧だけを根拠に日本語で簡潔に答えてください。
-- 該当する項目があれば、そのタイトルを挙げて答える（複数あれば箇条書き）。
-- 見当たらなければanswerで「箱の中には見当たりませんでした」と正直に言い、idsは空配列。
-- 一覧に無い情報を作らない（ハレーション厳禁）。idsは必ず一覧に存在するidだけ。
-- 今日は${toDateStr(today)}。「今週」等の相対表現は今日基準で判断する。
-- 提案系の質問（今晩なに作る?等）は、該当カテゴリから1〜3個おすすめして理由を一言。
-
-[箱の中身]
-${JSON.stringify(list)}
-
-質問: ${question}
-
-以下のJSON形式だけを返してください。前置き・コードブロック不要:
-{"answer":"日本語の答え（簡潔・改行可）","ids":[該当する項目のid配列（関連が強い順・最大5個・無ければ空）]}`;
+      const built = buildAskPrompt(items || [], question, opts);
+      const scope = { q: question, preset: opts && !opts.full ? opts.preset : null, total: built.total, detailed: built.detailed, filtered: built.filtered };
+      if (!built.idxToId.length) {          // 送るカードが1枚も無い＝AIを呼ばずに答える（お金がかからない）
+        const what = scope.preset ? scope.preset.cats.map(c => CATS[c] ? CATS[c].label : c).join("・") : "カード";
+        setAskAnswer(`箱の中に${what}がまだありません。`);
+        if (scope.preset) setAskScope(scope);
+        return;
+      }
+      const prompt = built.prompt;
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -1192,11 +1611,14 @@ ${JSON.stringify(list)}
       try {
         const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
         setAskAnswer(parsed.answer || "（回答が空でした）");
-        const valid = (Array.isArray(parsed.ids) ? parsed.ids : []).filter(id => (items || []).some(it => it.id === id));
+        // 答えの番号（1から）をカードのidに戻す。一覧に無い番号は捨てる
+        const valid = [...new Set((Array.isArray(parsed.ids) ? parsed.ids : [])
+          .map(n => built.idxToId[Number(n) - 1]).filter(id => id !== undefined && (items || []).some(it => it.id === id)))];
         setAskHits(valid);
       } catch (e2) {
         setAskAnswer(raw || "（回答が空でした）"); // JSONで返らなかった時は全文を答えとして表示
       }
+      setAskScope(scope);
     } catch (e) {
       setAskAnswer("聞けませんでした。通信かキーを確認して、もう一度試してください。");
     } finally {
@@ -1229,7 +1651,34 @@ ${JSON.stringify(list)}
     return `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())} ${p(base.getHours())}:${p(base.getMinutes())}`;
   }
   function resetAddForm() {
-    setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event"); setAddAtts([]);
+    setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event"); setAddAtts([]); setAddAmount("");
+  }
+  // 日付をタップ＝その日にすぐ書ける（2026-10-20 拓也さん「カレンダーの日付をタップしたらそのまま入力できるように」）。
+  // iPhone はタップの中で入力欄にフォーカスしないとキーボードが出ない＝仮の入力欄にいったんフォーカスし、シートが出たら本物へ移す
+  function openDayAdd(dStr, type) {
+    setSelDay(dStr);
+    setAddDay(dStr); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none");
+    setAddType(type || "event"); setAddAmount(""); setAddHimoku("食費"); setAddAtts([]);
+    try {
+      const tmp = document.createElement("input");
+      tmp.setAttribute("aria-hidden", "true");
+      tmp.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;font-size:16px;border:0;padding:0";
+      document.body.appendChild(tmp); tmp.focus();
+      focusHoldRef.current = tmp;
+    } catch (e) {}
+  }
+  // 支出を直す（家計簿・その日の支出・カードの⋮から）
+  function openMoneyEdit(it) {
+    setMenuId(null);
+    setMoneyEdit({ id: it.id, title: it.title || "", amount: it.amount ? String(it.amount) : "", himoku: it.himoku || "その他", date: it.date || it.added || toDateStr(new Date()) });
+  }
+  function saveMoneyEdit() {
+    const m = moneyEdit, amt = parseAmount(m.amount);
+    if (!amt) return;
+    setItems(prev => prev.map(it => it.id === m.id
+      ? { ...it, category: "money", title: m.title.trim() || m.himoku, amount: amt, himoku: m.himoku, date: m.date || it.date, chip: fmtYen(amt), meta: m.himoku }
+      : it));
+    setMoneyEdit(null);
   }
 
   // ── 予定への添付（写真/URL/ファイル）。作成中(mode:new)＝addAtts、既存(mode:existing,id)＝item.attachments ──
@@ -1305,6 +1754,16 @@ ${JSON.stringify(list)}
     return out;
   }
   function confirmDayAdd() {
+    if (addDay && addType === "money") {
+      const amt = parseAmount(addAmount);
+      if (!amt) return;
+      const item = { id: nextId.current++, category: "money", title: addTitle.trim() || addHimoku, amount: amt, himoku: addHimoku,
+        date: addDay, chip: fmtYen(amt), meta: addHimoku, added: toDateStr(new Date()) };
+      setItems(prev => [item, ...prev]);
+      setSelDay(addDay);
+      resetAddForm();
+      return;
+    }
     if (!addDay || !addTitle.trim()) return;
     if (addRemind !== "none" && "Notification" in window && Notification.permission === "default") {
       try { Notification.requestPermission(); } catch(e){}
@@ -1343,11 +1802,21 @@ ${JSON.stringify(list)}
       if (result.category==="event" && resultEnd) item.endTime = resultEnd; else delete item.endTime;
     } else { delete item.time; delete item.endTime; }
     if (resultPlace) item.place = resultPlace; else delete item.place;
+    if (item.category === "money") {
+      // 支出＝金額・費目・買った日を確定。写真だけの時に自動で付く「Googleで調べる」はレシートには要らない
+      const amt = parseAmount(resultAmount);
+      if (!amt) return;
+      item.amount = amt; item.himoku = resultHimoku || "その他";
+      item.date = resultDate || toDateStr(new Date());
+      item.chip = fmtYen(amt); item.meta = item.himoku;
+      if (item.searchLabel) { delete item.sourceUrl; delete item.searchLabel; }
+      delete item.time; delete item.endTime; delete item.place;
+    } else { delete item.amount; delete item.himoku; }
     item.added = toDateStr(new Date());
     if (pendingGeoRef.current) item.geo = pendingGeoRef.current; // 撮った場所（アルバム逆引き用）
     setItems(prev => [item, ...prev]);
     setResult(null); setInput(""); setImage(null); setSheet(false);
-    setResultDate(toDateStr(new Date())); setResultTime(""); setResultEnd(""); setResultPlace("");
+    setResultDate(toDateStr(new Date())); setResultTime(""); setResultEnd(""); setResultPlace(""); setResultAmount(""); setResultHimoku("その他");
     pendingGeoRef.current = null; setPendingPlace("");
   }
   function handleImageSearch(e, item) {
@@ -1365,7 +1834,13 @@ ${JSON.stringify(list)}
   }
 
   function changeCat(id, cat) {
-    setItems(prev => prev.map(it => it.id === id ? { ...it, category: cat } : it));
+    setItems(prev => prev.map(it => {
+      if (it.id !== id) return it;
+      if (cat !== "money" || isMoney(it)) return { ...it, category: cat };
+      // 支出にした＝家計簿に載るよう買った日と金額を下書き（値段のラベルがあれば金額に。無ければ¥0＝家計簿で直す）
+      const amt = it.amount || (/[¥￥円]/.test(it.chip || "") ? parseAmount(it.chip) : 0);
+      return { ...it, category: cat, date: it.date || it.added || toDateStr(new Date()), amount: amt, himoku: it.himoku || "その他", chip: fmtYen(amt) };
+    }));
     setMenuId(null);
   }
   function removeItem(id) {
@@ -1589,6 +2064,12 @@ ${JSON.stringify(list)}
   function coverDragEnd() { dragRef.current = null; }
 
   const catOrder = Object.keys(CATS);
+  // カレンダーに出す日ごとの支出（家計簿を一度でも使っていれば any＝マスに金額の行を取る）
+  const spendByDate = (() => {
+    const m = { any: false };
+    (items || []).forEach(it => { if (isMoney(it) && it.date) { m.any = true; m[it.date] = (m[it.date] || 0) + (it.amount || 0); } });
+    return m;
+  })();
   const visible = (() => {
     const arr = (items || []).filter(it => filter === "all" || it.category === filter);
     if (sort === "old") arr.reverse();
@@ -1652,13 +2133,15 @@ ${JSON.stringify(list)}
                         const d = dt.getDate(), m = dt.getMonth();
                         return (
                           <div key={di} style={{...S.dayMini,...(isToday?S.dayToday:{}),...(isSel&&!isToday?S.daySel:{}),...(isSel&&isToday?S.daySelToday:{}), cursor:"pointer"}}
-                            onClick={()=>setSelDay(dStr)}>
+                            onClick={()=>openDayAdd(dStr)}>
                             <span style={{...S.dayNumMini,...(isSun?{color:"#ff8a9a"}:isSat?{color:"#8aa8ff"}:{}),...(isToday?{color:"#fff"}:{})}}>{d}</span>
                             <span style={S.dayDots}>
-                              {(items||[]).filter(it=>it.date===toDateStr(dt)).slice(0,3).map((it,idx)=>(
-                                <i key={idx} style={{...S.dot,background:isToday?"rgba(255,255,255,0.9)":CATS[it.category]?.dot||"#ccc"}}/>
+                              {(items||[]).filter(it=>it.date===dStr && !isMoney(it)).slice(0,3).map((it,idx)=>(
+                                <i key={idx} style={{...S.dot,background:isToday?"rgba(255,255,255,0.9)":catOf(it.category).dot}}/>
                               ))}
                             </span>
+                            {/* その日の支出（家計簿を使っている時だけ行を取る＝使わない人のカレンダーは今までどおり） */}
+                            {spendByDate.any && <span style={{...S.daySpend, ...(isToday?{color:"rgba(255,255,255,0.92)"}:{})}}>{spendByDate[dStr] ? fmtShortYen(spendByDate[dStr]) : ""}</span>}
                           </div>
                         );
                       })}
@@ -1672,7 +2155,7 @@ ${JSON.stringify(list)}
             {(() => {
               const [,sm,sd] = selDay.split("-");
               const wd = ["日","月","火","水","木","金","土"][new Date(selDay+"T00:00").getDay()];
-              const dayItems = (items || []).filter(it => it.date===selDay)
+              const dayItems = (items || []).filter(it => it.date===selDay && !isMoney(it))
                                  .sort((a,b) => (a.done?1:0)-(b.done?1:0) || (a.time||"99:99").localeCompare(b.time||"99:99"));
               const dayPhotos = (items || []).filter(it => coverOf(it) && it.added===selDay);
               // 今週の買い物＝作る日を入れたレシピの材料が自動で集まる（ReciMe型：献立→買い物リストが勝手にできる）。
@@ -1681,6 +2164,9 @@ ${JSON.stringify(list)}
               const wkRows = wk.length ? buildShopRows(wk) : [];
               const wkNeed = wkRows.filter(r => !r.have).length;
               const wkLabel = !wkRows.length ? "材料がまだありません" : wkNeed ? `${wkNeed}品` : "そろっています";
+              const dayMoney = (items || []).filter(it => isMoney(it) && it.date === selDay);
+              const thisMonth = toDateStr(today).slice(0, 7);
+              const monthMoney = (items || []).filter(it => isMoney(it) && (it.date || "").startsWith(thisMonth));
               return (
                 <React.Fragment>
                   {wk.length > 0 && (
@@ -1693,14 +2179,24 @@ ${JSON.stringify(list)}
                       <span style={S.shopBannerChev}>›</span>
                     </div>
                   )}
+                  {monthMoney.length > 0 && (
+                    <div style={S.kakeiBanner} onClick={()=>setKakeiMonth(thisMonth)}>
+                      <span style={S.shopBannerIcon}>💴</span>
+                      <span style={{flex:1, minWidth:0}}>
+                        <span style={S.kakeiBannerTitle}>今月の支出 {fmtYen(monthMoney.reduce((a, it) => a + (it.amount || 0), 0))}</span>
+                        <span style={S.kakeiBannerSub}>{monthMoney.length}件・家計簿を開く</span>
+                      </span>
+                      <span style={S.kakeiBannerChev}>›</span>
+                    </div>
+                  )}
                   <div style={S.agendaHead}>
                     <span style={S.agendaDate}>{`${+sm}月${+sd}日（${wd}）`}{selDay===toDateStr(today) && <span style={S.agendaToday}>今日</span>}</span>
-                    <span style={S.addDayBtn} onClick={()=>{ setAddDay(selDay); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddType("event"); setAddRemind("none"); }}>＋ 予定・タスク</span>
+                    <span style={S.addDayBtn} onClick={()=>openDayAdd(selDay)}>＋ 予定・タスク・支出</span>
                   </div>
                   {dayItems.length===0
                     ? <div style={S.agendaEmpty}>予定なし</div>
                     : dayItems.map(it => {
-                        const c = CATS[it.category];
+                        const c = catOf(it.category);
                         return (
                           <div key={it.id} style={S.calEv}>
                             <div style={S.calEvTime}>
@@ -1747,6 +2243,22 @@ ${JSON.stringify(list)}
                           </div>
                         );
                       })}
+                  {/* この日の支出（家計簿）。行をタップ＝直す／見出しをタップ＝その月の家計簿 */}
+                  {dayMoney.length > 0 && (
+                    <div style={S.daySpendBox}>
+                      <div style={S.daySpendHead} onClick={()=>setKakeiMonth(selDay.slice(0, 7))}>
+                        <span>💴 この日の支出</span>
+                        <span style={S.daySpendTotal}>{fmtYen(dayMoney.reduce((a, it) => a + (it.amount || 0), 0))} ›</span>
+                      </div>
+                      {dayMoney.map(it => (
+                        <div key={it.id} style={S.kakeiRow} onClick={()=>openMoneyEdit(it)}>
+                          <span style={S.kakeiRowTitle}>{it.title}</span>
+                          <span style={S.kakeiRowHim}>{it.himoku || "その他"}</span>
+                          <span style={S.kakeiRowAmt}>{fmtYen(it.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {dayPhotos.length>0 && (
                     <div style={S.albumWrap}>
                       <div style={S.albumHead}>🖼 この日のアルバム<span style={S.albumCount}>{dayPhotos.length}</span></div>
@@ -1852,7 +2364,7 @@ ${JSON.stringify(list)}
         })()}
 
         {/* 箱に聞く（AIに聞ける＝生活版NotebookLMの核） */}
-        <div style={S.askBar} onClick={()=>{setAskOpen(true); setAskAnswer("");}}>
+        <div style={S.askBar} onClick={()=>{setAskOpen(true); setAskAnswer(""); setAskScope(null);}}>
           <span style={S.askBarIcon}>🔮</span>
           <span style={S.askBarText}>デテコイ！（例：この前のレシピ何だっけ？）</span>
         </div>
@@ -1866,14 +2378,31 @@ ${JSON.stringify(list)}
           </div>
         </div>
         <div style={S.tabs}>
-          {[["all","すべて","#16161e"],["event","予定",CATS.event.dot],["task","タスク",CATS.task.dot],["mono","欲しいもの",CATS.mono.dot],["recipe","レシピ",CATS.recipe.dot],["basho","行ってみたい",CATS.basho.dot],["joho","情報",CATS.joho.dot],["news","ニュース",CATS.news.dot],["kyomi","興味・関心",CATS.kyomi.dot]].map(([c,l,col])=>(
+          {[["all","すべて","#16161e"], ...catKeys().map(k => [k, CATS[k].label, CATS[k].dot])].map(([c,l,col])=>(
             <div key={c} onClick={()=>setFilter(c)}
               style={{...S.tab, ...(filter===c?{...S.tabOn, background: c==="all"?"linear-gradient(120deg,#16161e,#3a3a4e)":CATS[c]?CATS[c].grad:"#16161e"}:{})}}>
               <span style={{...S.tabDot, background: filter===c?"#fff":col}}/>
               <span style={{...S.tabLbl, ...(filter===c?{color:"#fff"}:{})}}>{l}</span>
             </div>
           ))}
+          {/* タブを自分で作る・名前を変える（2026-10-20） */}
+          <div style={S.tabAdd} onClick={openTabEdit}>＋ タブ</div>
         </div>
+        {/* 支出のタブを見ている時は、その月の家計簿へすぐ行ける */}
+        {filter === "money" && (() => {
+          const mon = toDateStr(today).slice(0, 7);
+          const tot = (items || []).filter(it => isMoney(it) && (it.date || "").startsWith(mon)).reduce((a, it) => a + (it.amount || 0), 0);
+          return (
+            <div style={{...S.kakeiBanner, margin:"0 20px 12px"}} onClick={()=>setKakeiMonth(mon)}>
+              <span style={S.shopBannerIcon}>💴</span>
+              <span style={{flex:1, minWidth:0}}>
+                <span style={S.kakeiBannerTitle}>今月の支出 {fmtYen(tot)}</span>
+                <span style={S.kakeiBannerSub}>家計簿を開く（費目別・日ごと）</span>
+              </span>
+              <span style={S.kakeiBannerChev}>›</span>
+            </div>
+          );
+        })()}
 
         <div style={S.wall}>
           {visible.length===0 ? (
@@ -1884,7 +2413,7 @@ ${JSON.stringify(list)}
               <div style={S.wallEmptyBtn} onClick={()=>setSheet(true)}>＋ 放り込んでみる</div>
             </div>
           ) : visible.map((it)=>{
-            const c = CATS[it.category];
+            const c = catOf(it.category);
             const heroImg = coverOf(it);
             return (
               <div key={it.id} style={S.card}>
@@ -1955,6 +2484,7 @@ ${JSON.stringify(list)}
                     <div style={S.menuClose} onClick={()=>setMenuId(null)}>✕</div>
                     <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openEdit(it)}>✎ 題名・写真を編集</div>
                     {it.category === "recipe" && <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openRecipe(it.id)}>🧺 材料を見る</div>}
+                    {isMoney(it) && <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openMoneyEdit(it)}>💴 金額・費目を直す</div>}
                     <div style={S.menuHint}>分類を変える</div>
                     {Object.entries(CATS).map(([k,v])=>(
                       <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
@@ -2070,15 +2600,49 @@ ${JSON.stringify(list)}
             <div style={S.sheet} onClick={e=>e.stopPropagation()}>
               <div style={S.sheetGrip}/>
               <div style={S.sheetTitle}>📅 {(()=>{const p=addDay.split("-");return `${+p[1]}月${+p[2]}日`;})()} に追加</div>
-              <div style={S.sheetSub}>この日の予定・タスクをサッと登録。</div>
+              {/* この日にもう入っている物（日付タップで開く＝その日の中身を見ながら書ける） */}
+              {(() => {
+                const its = (items || []).filter(it => it.date === addDay);
+                const others = its.filter(it => !isMoney(it)).sort((a,b) => (a.time||"99:99").localeCompare(b.time||"99:99"));
+                const spend = its.filter(isMoney).reduce((a, it) => a + (it.amount || 0), 0);
+                if (!others.length && !spend) return <div style={S.sheetSub}>この日の予定・タスク・支出をサッと登録。</div>;
+                return (
+                  <div style={S.addDayList}>
+                    {others.slice(0, 4).map(it => (
+                      <div key={it.id} style={S.addDayRow}>
+                        <span style={{...S.tabDot, background:catOf(it.category).dot}}/>
+                        {it.time && <span style={S.addDayTime}>{it.time}</span>}
+                        <span style={{...S.addDayTitle, ...(it.done?{textDecoration:"line-through", opacity:0.5}:{})}}>{it.title}</span>
+                      </div>
+                    ))}
+                    {others.length > 4 && <div style={S.addDayMore}>ほか{others.length - 4}件</div>}
+                    {spend > 0 && <div style={S.addDayRow}><span>💴</span><span style={S.addDayTitle}>この日の支出 {fmtYen(spend)}</span></div>}
+                  </div>
+                );
+              })()}
               <div style={S.typeToggle}>
-                {[["event","📅 予定"],["task","✅ タスク"]].map(([k,l])=>(
-                  <div key={k} onClick={()=>setAddType(k)} style={{...S.typeBtn, ...(addType===k?{...S.typeBtnOn, background:CATS[k].grad}:{})}}>{l}</div>
+                {[["event","📅"],["task","✅"],["money","💴"]].map(([k,ic])=>(
+                  <div key={k} onClick={()=>{ setAddType(k); setTimeout(()=>{ const el = k === "money" ? addAmountRef.current : addTitleRef.current; if (el) el.focus(); }, 0); }}
+                    style={{...S.typeBtn, ...(addType===k?{...S.typeBtnOn, background:CATS[k].grad}:{})}}>{ic} {CATS[k].label}</div>
                 ))}
               </div>
-              <input style={S.dateInput}
+              {addType === "money" ? (
+                <>
+                  <div style={S.moneyRow}>
+                    <span style={S.moneyYen}>¥</span>
+                    <input ref={addAmountRef} style={S.moneyInput} inputMode="numeric" placeholder="いくら？" value={addAmount}
+                      onChange={e=>setAddAmount(e.target.value.replace(/[^\d０-９]/g, ""))} onKeyDown={e=>{ if (e.key === "Enter") confirmDayAdd(); }} />
+                  </div>
+                  <div style={S.chipRow}>
+                    {HIMOKU.map(h => <div key={h} onClick={()=>setAddHimoku(h)} style={{...S.rChip, ...(addHimoku===h?S.moneyChipOn:{})}}>{h}</div>)}
+                  </div>
+                  <input style={{...S.dateInput, fontSize:16}} placeholder="お店・メモ（なくてもOK）" value={addTitle} onChange={e=>setAddTitle(e.target.value)} />
+                </>
+              ) : (
+                <>
+              <input ref={addTitleRef} style={{...S.dateInput, fontSize:16}}
                 placeholder={addType==="event"?"何の予定？（例：美容院、打合せ）":"やること（例：請求書送る）"}
-                value={addTitle} onChange={e=>setAddTitle(e.target.value)} autoFocus />
+                value={addTitle} onChange={e=>setAddTitle(e.target.value)} />
               {addType === "event" ? (
                 <>
                   <div style={S.swRow} onClick={()=>setAddAllDay(v=>!v)}>
@@ -2135,9 +2699,14 @@ ${JSON.stringify(list)}
                   ))}
                 </div>
               )}
+                </>
+              )}
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setAddDay(null)}>やめる</button>
-                <button style={{...S.btnMain, ...(!addTitle.trim()?{opacity:0.5}:{})}} onClick={confirmDayAdd} disabled={!addTitle.trim()}>この日に追加 ✓</button>
+                {(() => {
+                  const ng = addType === "money" ? !parseAmount(addAmount) : !addTitle.trim();
+                  return <button style={{...S.btnMain, ...(ng?{opacity:0.5}:{})}} onClick={confirmDayAdd} disabled={ng}>この日に追加 ✓</button>;
+                })()}
               </div>
               {addRemind !== "none" && <div style={S.remindNote}>※通知は「アプリを開いている/開いた時」に出ます。閉じてても鳴る通知は今後サーバー対応で実装予定。</div>}
             </div>
@@ -2188,6 +2757,15 @@ ${JSON.stringify(list)}
               {askAnswer && (
                 <div style={S.askAnswer}>{askAnswer}</div>
               )}
+              {/* 送る量を絞った時は、その事実と「全部で聞き直す」を出す（選び漏れで「見当たらない」になった時の逃げ道） */}
+              {askScope && askScope.filtered && !askBusy && (
+                <div style={S.askScope}>
+                  {askScope.preset
+                    ? `（${askScope.preset.cats.map(c => CATS[c] ? CATS[c].label : c).join("・")}だけを見て答えました） `
+                    : `（箱の${askScope.total}枚のうち、関係しそうな${askScope.detailed}枚を詳しく見て答えました） `}
+                  <span style={S.askScopeLink} onClick={()=>askBox(askScope.q, { full: true })}>全部を詳しく見て聞き直す →</span>
+                </div>
+              )}
               {/* 答えに該当したカード＝そのまま行動できる（開く/地図/予定に入れる） */}
               {askHits.length > 0 && askHits.map(id => {
                 const it = (items || []).find(x => x.id === id);
@@ -2233,10 +2811,10 @@ ${JSON.stringify(list)}
               <div style={S.samples}>
                 <div style={S.samplesLabel}>ワンタップで聞く：</div>
                 <div style={S.presetWrap}>
-                  {["🍳 今晩なに作る？","🚗 週末どこ行く？","✅ 今週やることは？","🛍 気になってた商品は？","📰 あとで読むものある？"].map((s,i)=>(
+                  {ASK_PRESETS.map((p,i)=>(
                     <div key={i} style={S.presetChip}
-                      onClick={()=>{ if(askBusy) return; const q=s.replace(/^[^ ]+ /,""); setAskInput(q); askBox(q); }}>
-                      {s}
+                      onClick={()=>{ if(askBusy) return; setAskInput(p.q); askBox(p.q, { preset: p }); }}>
+                      {p.label}
                     </div>
                   ))}
                 </div>
@@ -2322,16 +2900,16 @@ ${JSON.stringify(list)}
                 <>
                   <div style={S.sheetTitle}>AIが読み取りました</div>
                   <div style={S.preview}>
-                    <div style={{...S.previewHero, background:CATS[result.category].grad}}>
+                    <div style={{...S.previewHero, background:catOf(result.category).grad}}>
                       {(result._img || result.image) && <img src={result._img || result.image} alt="" style={S.previewImg} onError={e=>{e.target.style.display='none';}} />}
-                      <span style={S.cardCat}>{CATS[result.category].label}</span>
+                      <span style={S.cardCat}>{catOf(result.category).label}</span>
                     </div>
                     <div style={{padding:"14px 16px 16px"}}>
                       <input style={S.resultTitleInput} value={result.title || ""} maxLength={80} aria-label="題名"
                         onChange={e=>setResult({...result, title:e.target.value})} />
                       <div style={S.resultTitleHint}>✎ 題名はタップして直せます</div>
                       {result.meta && <div style={S.cardMeta}>{result.meta}</div>}
-                      {result.chip && <span style={{...S.cardChip, background:CATS[result.category].chip, color:CATS[result.category].chipC}}>{result.chip}</span>}
+                      {result.chip && result.category !== "money" && <span style={{...S.cardChip, background:catOf(result.category).chip, color:catOf(result.category).chipC}}>{result.chip}</span>}
                     </div>
                   </div>
                   {error && <div style={{...S.error, marginTop:0, marginBottom:12}}>{error}</div>}
@@ -2393,6 +2971,33 @@ ${JSON.stringify(list)}
                         value={resultPlace} onChange={e=>setResultPlace(e.target.value)} />
                     </>
                   )}
+                  {/* 支出（レシート）＝保存する前に金額・費目・日付を確かめて直せる（競合の家計簿アプリも保存前に確認を挟む） */}
+                  {result.category==="money" && (
+                    <>
+                      <div style={S.fieldLabel}>
+                        金額
+                        {parseAmount(result.amount)
+                          ? <span style={{marginLeft:6,fontSize:10,color:"#22c55e",fontWeight:700}}>✓ AIが読み取り済み（合っているか確かめてください）</span>
+                          : <span style={{marginLeft:6,fontSize:10,color:"#f59e0b"}}>読み取れませんでした — 入れてください</span>}
+                      </div>
+                      <div style={{...S.moneyRow, ...(parseAmount(resultAmount)?{}:{borderColor:"#f59e0b"})}}>
+                        <span style={S.moneyYen}>¥</span>
+                        <input style={S.moneyInput} inputMode="numeric" placeholder="いくら？" value={resultAmount}
+                          onChange={e=>setResultAmount(e.target.value.replace(/[^\d０-９]/g, ""))} />
+                      </div>
+                      <div style={S.fieldLabel}>費目</div>
+                      <div style={S.chipRow}>
+                        {HIMOKU.map(h => <div key={h} onClick={()=>setResultHimoku(h)} style={{...S.rChip, ...(resultHimoku===h?S.moneyChipOn:{})}}>{h}</div>)}
+                      </div>
+                      <div style={S.fieldLabel}>
+                        買った日
+                        {result.date
+                          ? <span style={{marginLeft:6,fontSize:10,color:"#22c55e",fontWeight:700}}>✓ AIが読み取り済み</span>
+                          : <span style={{marginLeft:6,fontSize:10,color:"#f59e0b"}}>日付が読めないので今日にしています</span>}
+                      </div>
+                      <input type="date" style={S.dateInput} value={resultDate} onChange={e=>setResultDate(e.target.value)} />
+                    </>
+                  )}
                   {/* 画像内のID/URLからAIが見つけた本人ページ＝ここからすぐ飛べる */}
                   {result.link && (
                     <a href={result.link} target="_blank" rel="noopener noreferrer" style={S.resultGoBtn}>
@@ -2411,7 +3016,10 @@ ${JSON.stringify(list)}
                   </div>
                   <div style={S.sheetBtns}>
                     <button style={S.btnGhost} onClick={()=>setResult(null)}>戻る</button>
-                    <button style={S.btnMain} onClick={confirmAdd}>箱に入れる ✓</button>
+                    {(() => {
+                      const ng = result.category === "money" && !parseAmount(resultAmount); // 支出は金額が無いと家計簿に載せられない
+                      return <button style={{...S.btnMain, ...(ng?{opacity:0.5}:{})}} onClick={confirmAdd} disabled={ng}>{ng ? "金額を入れてください" : "箱に入れる ✓"}</button>;
+                    })()}
                   </div>
                 </>
               )}
@@ -2699,6 +3307,152 @@ ${JSON.stringify(list)}
           </div>
         )}
 
+        {/* 家計簿（月ごと）：合計・費目別・日ごと。行をタップ＝直す */}
+        {kakeiMonth && (() => {
+          const [ky, km] = kakeiMonth.split("-").map(Number);
+          const list = (items || []).filter(it => isMoney(it) && (it.date || "").startsWith(kakeiMonth))
+            .sort((a, b) => (b.date || "").localeCompare(a.date || "") || (Number(b.id) || 0) - (Number(a.id) || 0));
+          const total = list.reduce((a, it) => a + (it.amount || 0), 0);
+          const byHim = {};
+          list.forEach(it => { const h = it.himoku || "その他"; byHim[h] = (byHim[h] || 0) + (it.amount || 0); });
+          const hims = Object.entries(byHim).sort((a, b) => b[1] - a[1]);
+          const max = hims.length ? hims[0][1] : 0;
+          const days = [];
+          list.forEach(it => { const last = days[days.length - 1]; if (last && last[0] === it.date) last[1].push(it); else days.push([it.date, [it]]); });
+          const noAmt = list.filter(it => !it.amount).length;
+          const shift = d => { const dt = new Date(ky, km - 1 + d, 1); setKakeiMonth(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`); };
+          return (
+            <div style={S.sheetWrap} onClick={()=>setKakeiMonth(null)}>
+              <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+                <div style={S.sheetGrip}/>
+                <div style={S.kakeiHead}>
+                  <span style={S.kakeiNav} onClick={()=>shift(-1)}>‹</span>
+                  <span style={{...S.sheetTitle, marginBottom:0}}>💴 {ky}年{km}月の家計簿</span>
+                  <span style={S.kakeiNav} onClick={()=>shift(1)}>›</span>
+                </div>
+                <div style={S.kakeiTotal}>{fmtYen(total)}<span style={S.kakeiCount}>{list.length}件</span></div>
+                {noAmt > 0 && <div style={{...S.ingWarn, marginBottom:10}}>金額が入っていない支出が{noAmt}件あります（¥0で数えています）。行をタップして直せます。</div>}
+                {list.length === 0 ? (
+                  <div style={S.agendaEmpty}>この月の支出はまだありません。レシートを撮って放り込むか、カレンダーの日付をタップして「支出」で入れられます。</div>
+                ) : (
+                  <>
+                    <div style={S.fieldLabel}>費目別</div>
+                    {hims.map(([h, v]) => (
+                      <div key={h} style={S.kakeiBarRow}>
+                        <span style={S.kakeiBarLbl}>{h}</span>
+                        <span style={S.kakeiBarTrack}><span style={{...S.kakeiBarFill, width:`${max ? Math.max(3, v / max * 100) : 0}%`}}/></span>
+                        <span style={S.kakeiBarAmt}>{fmtYen(v)}</span>
+                        <span style={S.kakeiBarPct}>{total ? Math.round(v / total * 100) : 0}%</span>
+                      </div>
+                    ))}
+                    <div style={S.fieldLabel}>日ごと</div>
+                    {days.map(([d, its]) => (
+                      <div key={d} style={S.kakeiDay}>
+                        <div style={S.kakeiDayHead}><span>{mdw(d)}</span><span>{fmtYen(its.reduce((a, it) => a + (it.amount || 0), 0))}</span></div>
+                        {its.map(it => (
+                          <div key={it.id} style={S.kakeiRow} onClick={()=>openMoneyEdit(it)}>
+                            <span style={S.kakeiRowTitle}>{it.title}</span>
+                            <span style={S.kakeiRowHim}>{it.himoku || "その他"}</span>
+                            <span style={{...S.kakeiRowAmt, ...(it.amount ? {} : {color:"#d97706"})}}>{it.amount ? fmtYen(it.amount) : "金額なし"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </>
+                )}
+                <div style={S.sheetBtns}>
+                  <button style={S.btnGhost} onClick={()=>setKakeiMonth(null)}>閉じる</button>
+                  <button style={S.btnMain} onClick={()=>{
+                    const d = kakeiMonth === toDateStr(today).slice(0, 7) ? toDateStr(today) : kakeiMonth + "-01";
+                    setKakeiMonth(null); openDayAdd(d, "money");
+                  }}>＋ 支出を手で入れる</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* 支出を直す（家計簿・その日の支出・カードの⋮から）。家計簿の上に重なる */}
+        {moneyEdit && (
+          <div style={{...S.sheetWrap, zIndex:2050}} onClick={()=>setMoneyEdit(null)}>
+            <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+              <div style={S.sheetGrip}/>
+              <div style={S.sheetTitle}>💴 支出を直す</div>
+              <div style={{...S.moneyRow, ...(parseAmount(moneyEdit.amount)?{}:{borderColor:"#f59e0b"})}}>
+                <span style={S.moneyYen}>¥</span>
+                <input style={S.moneyInput} inputMode="numeric" placeholder="いくら？" value={moneyEdit.amount}
+                  onChange={e=>setMoneyEdit({...moneyEdit, amount:e.target.value.replace(/[^\d０-９]/g, "")})} />
+              </div>
+              <div style={S.chipRow}>
+                {HIMOKU.map(h => <div key={h} onClick={()=>setMoneyEdit({...moneyEdit, himoku:h})} style={{...S.rChip, ...(moneyEdit.himoku===h?S.moneyChipOn:{})}}>{h}</div>)}
+              </div>
+              <div style={S.fieldLabel}>お店・メモ</div>
+              <input style={{...S.dateInput, fontSize:16}} value={moneyEdit.title} placeholder="なくてもOK（費目の名前になります）"
+                onChange={e=>setMoneyEdit({...moneyEdit, title:e.target.value})} />
+              <div style={S.fieldLabel}>買った日</div>
+              <input type="date" style={S.dateInput} value={moneyEdit.date} onChange={e=>setMoneyEdit({...moneyEdit, date:e.target.value})} />
+              <div style={S.sheetBtns}>
+                <button style={S.btnGhost} onClick={()=>setMoneyEdit(null)}>閉じる</button>
+                <button style={{...S.btnMain, ...(parseAmount(moneyEdit.amount)?{}:{opacity:0.5})}} onClick={saveMoneyEdit} disabled={!parseAmount(moneyEdit.amount)}>直す ✓</button>
+              </div>
+              <div style={S.moneyDel} onClick={()=>{ if (window.confirm("この支出を消しますか？")) { removeItem(moneyEdit.id); setMoneyEdit(null); } }}>🗑 この支出を消す</div>
+            </div>
+          </div>
+        )}
+
+        {/* タブを作る・名前を変える。保存するまで箱は変わらない。消したタブのカードは「情報」へ移す（消さない） */}
+        {tabEdit && (
+          <div style={S.sheetWrap} onClick={()=>setTabEdit(null)}>
+            <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+              <div style={S.sheetGrip}/>
+              <div style={S.sheetTitle}>タブを作る・名前を変える</div>
+              <div style={S.sheetSub}>名前はタップして直せます。自分で作ったタブには、名前に合う物をAIが入れます（箱に入れる前の画面で選び直せます）。</div>
+              <div style={S.fieldLabel}>自分のタブ</div>
+              {tabEdit.custom.length === 0 && <div style={S.tabEditEmpty}>まだありません。下で作れます（例：推し活・子ども・仕事・旅行）。</div>}
+              {tabEdit.custom.map((t, i) => (
+                <div key={t.key}>
+                  <div style={S.tabEditRow}>
+                    <span style={{...S.tabDot, width:10, height:10, background:CUSTOM_PAL[t.pal % CUSTOM_PAL.length].dot}}/>
+                    <input style={S.tabEditInput} value={t.label} maxLength={12} aria-label="タブの名前"
+                      onChange={e=>setTabEdit({...tabEdit, custom: tabEdit.custom.map((x, j) => j === i ? {...x, label:e.target.value} : x)})} />
+                    <span style={S.tabEditDel} onClick={()=>setTabEdit({...tabEdit, delKey: tabEdit.delKey === t.key ? null : t.key})}>🗑</span>
+                  </div>
+                  {tabEdit.delKey === t.key && (() => {
+                    const n = (items || []).filter(it => it.category === t.key).length;
+                    return (
+                      <div style={S.tabEditConfirm}>
+                        <span>「{t.label || "このタブ"}」を消しますか？{n ? `中のカード${n}枚は「${CATS.joho.label}」に移ります（カードは消えません）。` : ""}</span>
+                        <span style={S.tabEditConfirmBtn} onClick={()=>setTabEdit({...tabEdit, custom: tabEdit.custom.filter(x => x.key !== t.key), delKey:null})}>消す</span>
+                      </div>
+                    );
+                  })()}
+                </div>
+              ))}
+              <div style={S.tabEditRow}>
+                <span style={{...S.tabDot, width:10, height:10, background:"#d0d0da"}}/>
+                <input style={S.tabEditInput} value={tabEdit.newName} maxLength={12} placeholder="新しいタブの名前"
+                  onChange={e=>setTabEdit({...tabEdit, newName:e.target.value})} onKeyDown={e=>{ if (e.key === "Enter") addCustomTab(); }} />
+                <span style={{...S.tabEditAddBtn, ...(tabEdit.newName.trim()?{}:{opacity:0.4})}} onClick={addCustomTab}>＋ 作る</span>
+              </div>
+              <div style={S.fieldLabel}>はじめからあるタブの名前</div>
+              {BASE_CAT_KEYS.map(k => (
+                <div key={k} style={S.tabEditRow}>
+                  <span style={{...S.tabDot, width:10, height:10, background:CATS[k].dot}}/>
+                  <input style={S.tabEditInput} value={tabEdit.labels[k]} maxLength={12} aria-label="タブの名前"
+                    onChange={e=>setTabEdit({...tabEdit, labels:{...tabEdit.labels, [k]: e.target.value}})} />
+                  {tabEdit.labels[k].trim() !== BASE_LABELS[k] && (
+                    <span style={S.tabEditReset} onClick={()=>setTabEdit({...tabEdit, labels:{...tabEdit.labels, [k]: BASE_LABELS[k]}})}>元に戻す</span>
+                  )}
+                </div>
+              ))}
+              <div style={S.sheetBtns}>
+                <button style={S.btnGhost} onClick={()=>setTabEdit(null)}>やめる</button>
+                <button style={S.btnMain} onClick={saveTabEdit}>保存する</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 設定シート */}
         {settings && (
           <div style={S.sheetWrap} onClick={()=>setSettings(false)}>
@@ -2732,6 +3486,72 @@ ${JSON.stringify(list)}
               <div style={S.help}>
                 入れると、YouTubeのレシピ動画を放り込んだ時に<b>概要欄に書いてある材料をそのまま</b>読みます（推定より正確）。無料（1日10,000回まで・動画1本＝1回）。キーはこの端末の中だけに保存されます。<br/>
                 取り方： <b>console.cloud.google.com</b>（Googleアカウント）→ プロジェクトを作る → 「APIとサービス」→「ライブラリ」で <b>YouTube Data API v3</b> を有効にする → 「認証情報」→「認証情報を作成」→「APIキー」→ できたキーの「キーを制限」で、使えるサイトを <b>claudehikuroudo-pixel.github.io</b>、使えるAPIを YouTube Data API v3 だけにする
+              </div>
+
+              {/* 箱のバックアップ（書き出し・読み込み）。結果・失敗は必ずこの欄に出す */}
+              <div style={S.fieldLabel}>箱のバックアップ（書き出し・読み込み）</div>
+              <div style={S.bkBox}>
+                <div style={S.bkNote}>
+                  箱の中身はこの端末の中だけにあります。機種変更やアイコンを消す前に<b>書き出して</b>、「ファイルに保存」などで残してください。写真・材料・予定の添付も入ります（APIキーは入りません）。
+                </div>
+                <div style={S.bkLast}>{lastBackup ? `前回の書き出し：${fmtBkDate(lastBackup)}` : "まだ書き出したことがありません"}</div>
+                {!bkOut ? (
+                  <button style={{...S.bkBtn, ...(bkBusy ? {opacity:0.5} : {})}} onClick={prepareExport} disabled={!!bkBusy || !items}>
+                    {bkBusy === "export" ? "ファイルを作っています…" : `⤓ 書き出す（全${(items || []).length}枚）`}
+                  </button>
+                ) : (
+                  <div style={S.bkReady}>
+                    <div style={S.bkReadyText}>
+                      準備できました：カード{bkOut.count}枚（写真つき{bkOut.photos}枚）{bkOut.files ? `・添付ファイル${bkOut.files}個` : ""}・{fmtMB(bkOut.file.size)}
+                      {bkOut.missing > 0 && <div style={{color:"#c0392b", marginTop:4}}>⚠ 添付ファイル{bkOut.missing}個はこの端末に見つからず、入っていません。</div>}
+                    </div>
+                    <div style={{display:"flex", gap:8}}>
+                      <button style={{...S.bkBtn, flex:1, background:"#fff", color:"#666"}} onClick={()=>setBkOut(null)}>やめる</button>
+                      <button style={{...S.bkBtn, flex:2, background:"linear-gradient(120deg,#16161e,#34344a)", color:"#fff"}} onClick={shareExport}>保存・共有する</button>
+                    </div>
+                  </div>
+                )}
+                <button style={{...S.bkBtn, marginTop:8, ...(bkBusy ? {opacity:0.5} : {})}} onClick={()=>bkFileRef.current && bkFileRef.current.click()} disabled={!!bkBusy}>
+                  {bkBusy === "import" ? "ファイルを確かめています…" : "⤒ 書き出したファイルを読み込む"}
+                </button>
+                <input ref={bkFileRef} type="file" style={{display:"none"}} onChange={pickBackup} />
+                {bkIn && (
+                  <div style={S.bkReady}>
+                    <div style={S.bkReadyText}>
+                      {bkIn.name}（{fmtMB(bkIn.size)}）<br/>
+                      {bkIn.exportedAt && fmtBkDate(bkIn.exportedAt) ? `${fmtBkDate(bkIn.exportedAt)} に書き出し・` : ""}カード{bkIn.items.length}枚{Object.keys(bkIn.files).length ? `・添付ファイル${Object.keys(bkIn.files).length}個` : ""}
+                      {(bkIn.broken > 0 || bkIn.lostFiles > 0) && (
+                        <div style={{color:"#c0392b", marginTop:4}}>
+                          ⚠ {bkIn.broken > 0 ? `壊れていた（または重複していた）カード${bkIn.broken}枚は入りません。` : ""}{bkIn.lostFiles > 0 ? `添付ファイル${bkIn.lostFiles}個は読めません。` : ""}
+                        </div>
+                      )}
+                    </div>
+                    {!bkConfirm ? (
+                      <>
+                        <button style={{...S.bkBtn, background:"linear-gradient(120deg,#16161e,#34344a)", color:"#fff"}} onClick={()=>applyImport("add")} disabled={!!bkBusy}>
+                          {bkBusy === "apply" ? "読み込み中…" : "今の箱に足す（同じカードは飛ばす）"}
+                        </button>
+                        <div style={{display:"flex", gap:8, marginTop:8}}>
+                          <button style={{...S.bkBtn, flex:1, background:"#fff", color:"#666"}} onClick={()=>setBkIn(null)} disabled={!!bkBusy}>やめる</button>
+                          <button style={{...S.bkBtn, flex:2, color:"#c0392b"}} onClick={()=>setBkConfirm(true)} disabled={!!bkBusy}>上書き（置き換える）</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{fontSize:12, color:"#c0392b", fontWeight:700, lineHeight:1.6, margin:"2px 0 8px"}}>
+                          今の箱の{(items || []).length}枚は消えて、このファイルの{bkIn.items.length}枚に置き換わります。元に戻せません。
+                        </div>
+                        <div style={{display:"flex", gap:8}}>
+                          <button style={{...S.bkBtn, flex:1, background:"#fff", color:"#666"}} onClick={()=>setBkConfirm(false)} disabled={!!bkBusy}>戻る</button>
+                          <button style={{...S.bkBtn, flex:2, background:"#c0392b", color:"#fff"}} onClick={()=>applyImport("replace")} disabled={!!bkBusy}>
+                            {bkBusy === "apply" ? "読み込み中…" : "置き換える"}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+                {bkMsg && <div style={bkMsg.t === "ok" ? S.bkOk : bkMsg.t === "warn" ? S.bkWarn : S.bkErr}>{bkMsg.s}</div>}
               </div>
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setSettings(false)}>閉じる</button>
@@ -3057,6 +3877,62 @@ const S = {
   attXSm: { fontSize:9.5, color:"#bcbcc8", fontWeight:700, padding:"0 1px" },
   attPin: { fontSize:14, color:"#a0a0b0", cursor:"pointer", padding:"2px 4px", flexShrink:0, alignSelf:"flex-start" },
   help: { marginTop:14, padding:12, borderRadius:12, background:"#f2f2f6", fontSize:11.5, color:"#777", lineHeight:1.7 },
+  bkBox: { padding:12, borderRadius:14, background:"#fff", border:"1px solid #e8e8ee" },
+  bkNote: { fontSize:11.5, color:"#666", lineHeight:1.7 },
+  bkLast: { fontSize:11, fontWeight:700, color:"#8b54f5", margin:"6px 0 10px" },
+  bkBtn: { width:"100%", minHeight:44, borderRadius:13, border:"1px solid #e8e8ee", background:"#f6f4ff", fontSize:13, fontWeight:700, color:"#4a3a8a", cursor:"pointer", padding:"0 12px" },
+  bkReady: { marginTop:8, padding:10, borderRadius:12, background:"#f6f6fa" },
+  bkReadyText: { fontSize:12, color:"#333", lineHeight:1.6, marginBottom:8, wordBreak:"break-all" },
+  bkOk: { marginTop:10, padding:"10px 12px", borderRadius:12, background:"rgba(47,216,122,0.12)", color:"#127A44", fontSize:12, fontWeight:600, lineHeight:1.6, whiteSpace:"pre-wrap" },
+  bkWarn: { marginTop:10, padding:"10px 12px", borderRadius:12, background:"rgba(255,182,39,0.16)", color:"#8a5a00", fontSize:12, fontWeight:600, lineHeight:1.6, whiteSpace:"pre-wrap" },
+  bkErr: { marginTop:10, padding:"10px 12px", borderRadius:12, background:"rgba(240,67,108,0.1)", color:"#c0392b", fontSize:12, fontWeight:700, lineHeight:1.6, whiteSpace:"pre-wrap" },
+  // 家計簿（2026-10-20）
+  daySpend: { fontSize:8.5, fontWeight:800, color:"#8a6510", height:10, lineHeight:"10px", letterSpacing:"-0.02em", whiteSpace:"nowrap" },
+  kakeiBanner: { display:"flex", alignItems:"center", gap:10, margin:"2px 0 10px", padding:"10px 12px", borderRadius:14, background:"linear-gradient(120deg,rgba(230,189,82,0.2),rgba(184,134,27,0.12))", border:"1px solid rgba(184,134,27,0.3)", cursor:"pointer" },
+  kakeiBannerTitle: { display:"block", fontSize:13, fontWeight:800, color:"#7A5A0E" },
+  kakeiBannerSub: { display:"block", fontSize:10.5, color:"#8a7550", marginTop:1 },
+  kakeiBannerChev: { fontSize:18, fontWeight:700, color:"#b8963e", flexShrink:0 },
+  daySpendBox: { margin:"4px 0 10px", padding:"8px 10px", borderRadius:12, background:"rgba(230,189,82,0.12)", border:"1px solid rgba(184,134,27,0.22)" },
+  daySpendHead: { display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12, fontWeight:800, color:"#7A5A0E", marginBottom:4, cursor:"pointer" },
+  daySpendTotal: { fontSize:13, fontWeight:900 },
+  kakeiRow: { display:"flex", alignItems:"center", gap:8, padding:"7px 2px", borderTop:"1px solid rgba(0,0,0,0.05)", cursor:"pointer" },
+  kakeiRowTitle: { flex:1, minWidth:0, fontSize:12.5, fontWeight:600, color:"#1a1a24", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  kakeiRowHim: { fontSize:10.5, fontWeight:700, color:"#8a6510", background:"rgba(201,154,46,0.16)", borderRadius:8, padding:"2px 7px", flexShrink:0 },
+  kakeiRowAmt: { fontSize:13, fontWeight:800, color:"#1a1a24", flexShrink:0, minWidth:64, textAlign:"right" },
+  kakeiHead: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:6 },
+  kakeiNav: { width:36, height:36, borderRadius:18, display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, fontWeight:700, color:"#7A5A0E", background:"rgba(201,154,46,0.14)", cursor:"pointer", flexShrink:0, userSelect:"none" },
+  kakeiTotal: { fontSize:30, fontWeight:900, color:"#16161e", letterSpacing:"-0.02em", textAlign:"center", margin:"4px 0 10px" },
+  kakeiCount: { fontSize:12, fontWeight:700, color:"#9a9aaa", marginLeft:8 },
+  kakeiBarRow: { display:"flex", alignItems:"center", gap:8, margin:"0 0 7px" },
+  kakeiBarLbl: { width:64, fontSize:11.5, fontWeight:700, color:"#555", flexShrink:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  kakeiBarTrack: { flex:1, height:10, borderRadius:5, background:"rgba(0,0,0,0.06)", overflow:"hidden" },
+  kakeiBarFill: { display:"block", height:"100%", borderRadius:5, background:"linear-gradient(90deg,#e6bd52,#b8861b)" },
+  kakeiBarAmt: { width:72, fontSize:11.5, fontWeight:800, color:"#1a1a24", textAlign:"right", flexShrink:0 },
+  kakeiBarPct: { width:32, fontSize:10.5, fontWeight:700, color:"#9a9aaa", textAlign:"right", flexShrink:0 },
+  kakeiDay: { marginBottom:10, padding:"6px 10px", borderRadius:12, background:"#fff", border:"1px solid #ececf2" },
+  kakeiDayHead: { display:"flex", justifyContent:"space-between", fontSize:11.5, fontWeight:800, color:"#7a7a8a", padding:"2px 2px 4px" },
+  moneyRow: { display:"flex", alignItems:"center", gap:6, height:58, borderRadius:16, border:"1.5px solid #e6d3a3", background:"#fff", padding:"0 14px", marginBottom:12 },
+  moneyYen: { fontSize:24, fontWeight:900, color:"#8a6510" },
+  moneyInput: { flex:1, minWidth:0, height:"100%", border:"none", outline:"none", background:"transparent", fontSize:26, fontWeight:900, color:"#16161e" },
+  moneyChipOn: { background:"rgba(201,154,46,0.18)", borderColor:"#d9b860", color:"#7A5A0E" },
+  moneyDel: { marginTop:12, textAlign:"center", fontSize:12, fontWeight:700, color:"#c0392b", cursor:"pointer", padding:6 },
+  addDayList: { margin:"2px 0 12px", padding:"8px 10px", borderRadius:12, background:"#f4f2fb" },
+  addDayRow: { display:"flex", alignItems:"center", gap:7, padding:"3px 0", fontSize:12.5, color:"#2a2440" },
+  addDayTime: { fontSize:11, fontWeight:800, color:"#8b54f5", flexShrink:0 },
+  addDayTitle: { flex:1, minWidth:0, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  addDayMore: { fontSize:11, color:"#9a9aaa", paddingLeft:14 },
+  // 自分のタブ（2026-10-20）
+  tabAdd: { display:"flex", alignItems:"center", padding:"7px 12px", borderRadius:100, border:"1.5px dashed rgba(139,84,245,0.45)", color:"#8b54f5", fontSize:12, fontWeight:800, cursor:"pointer", whiteSpace:"nowrap", flexShrink:0, background:"rgba(255,255,255,0.5)" },
+  tabEditEmpty: { fontSize:11.5, color:"#9a9aaa", margin:"0 0 8px" },
+  tabEditRow: { display:"flex", alignItems:"center", gap:8, marginBottom:8 },
+  tabEditInput: { flex:1, minWidth:0, height:42, borderRadius:12, border:"1px solid #e8e8ee", background:"#fff", padding:"0 12px", fontSize:16, color:"#1a1a24", outline:"none" },
+  tabEditDel: { width:36, height:36, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:10, background:"rgba(240,67,108,0.08)", cursor:"pointer", flexShrink:0, fontSize:15 },
+  tabEditReset: { fontSize:11, fontWeight:800, color:"#8b54f5", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
+  tabEditAddBtn: { fontSize:12, fontWeight:800, color:"#fff", background:"linear-gradient(120deg,#16161e,#34344a)", borderRadius:10, padding:"10px 12px", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
+  tabEditConfirm: { display:"flex", alignItems:"center", gap:8, margin:"-2px 0 10px", padding:"8px 10px", borderRadius:10, background:"rgba(240,67,108,0.08)", fontSize:11.5, color:"#9b2335", lineHeight:1.5 },
+  tabEditConfirmBtn: { fontSize:12, fontWeight:800, color:"#fff", background:"#c0392b", borderRadius:9, padding:"7px 12px", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
+  askScope: { marginTop:8, fontSize:11.5, color:"#777", lineHeight:1.6 },
+  askScopeLink: { color:"#8b54f5", fontWeight:800, cursor:"pointer", whiteSpace:"nowrap" },
   // ── レシピの材料 ──
   cardIngBtn: { display:"flex", width:"100%", boxSizing:"border-box", justifyContent:"center", whiteSpace:"nowrap", overflow:"hidden", alignItems:"center", gap:4, marginTop:6, marginRight:0, padding:"7px 6px", borderRadius:9, background:"rgba(255,94,98,0.12)", border:"1px solid rgba(255,94,98,0.25)", color:"#d63f37", fontSize:12, fontWeight:800, cursor:"pointer" },
   recipeHero: { width:"100%", aspectRatio:"3 / 1", borderRadius:16, position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end", padding:12, boxSizing:"border-box" },
@@ -3172,7 +4048,7 @@ function lgStage({ sky, orbs, edge }) {
     edge:"rgba(244,232,248,0.8)",
   });
   // 種類の文字色を濃く（Bではガラスの上で薄く見えた）
-  const DEEP = { event:"#C62A58", task:"#6A3FD6", mono:"#9A5D00", basho:"#127A44", joho:"#0E6AA8", recipe:"#B8322A", news:"#3B4658", kyomi:"#9C1FB0" };
+  const DEEP = { event:"#C62A58", task:"#6A3FD6", mono:"#9A5D00", basho:"#127A44", joho:"#0E6AA8", recipe:"#B8322A", news:"#3B4658", kyomi:"#9C1FB0", money:"#7A5A0E" };
   for (const k of Object.keys(DEEP)) if (CATS[k]) CATS[k].chipC = DEEP[k];
   const PILL = { boxShadow:"inset 0 0 0 40px rgba(255,255,255,0.55), 0 1px 3px rgba(40,30,80,0.1)", border:"1px solid rgba(255,255,255,0.9)" };
   const BTN = { boxShadow:"inset 0 0 0 60px rgba(255,255,255,0.5), inset 1px 1px 0 rgba(255,255,255,0.9), 0 2px 6px rgba(40,30,80,0.08)", border:"1px solid rgba(255,255,255,0.85)" };
