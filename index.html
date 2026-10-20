@@ -130,7 +130,8 @@ const CATS = {
   news:  { label: "ニュース", en: "News", grad: "linear-gradient(145deg,#64748b,#475569)", chip: "rgba(100,116,139,0.15)", chipC: "#475569", dot: "#64748b" },
   kyomi: { label: "興味・関心", en: "Interest", grad: "linear-gradient(145deg,#e879f9,#c026d3)", chip: "rgba(217,70,239,0.13)", chipC: "#c026d3", dot: "#d946ef" },
   // 支出（家計簿・2026-10-20 拓也さん「写真撮ったら金額読むのと、仕分け、その日の支出、家計簿」）。amount(円)・himoku(費目)・date(買った日)を持つ
-  money: { label: "支出", en: "Money", grad: "linear-gradient(145deg,#e6bd52,#b8861b)", chip: "rgba(201,154,46,0.16)", chipC: "#8a6510", dot: "#c99a2e" },
+  // 2026-10-20② 拓也さん「ホーム、分類のところに家計簿って入れて」＝タブの名前は「家計簿」（中の1枚1枚は支出）
+  money: { label: "家計簿", en: "Money", grad: "linear-gradient(145deg,#e6bd52,#b8861b)", chip: "rgba(201,154,46,0.16)", chipC: "#8a6510", dot: "#c99a2e" },
 };
 // 既定の種類（並び順もこれ）。利用者が作ったタブはこの後ろに並ぶ
 const BASE_CAT_KEYS = ["event", "task", "mono", "recipe", "basho", "joho", "news", "kyomi", "money"];
@@ -147,7 +148,20 @@ const CUSTOM_PAL = [
   { grad: "linear-gradient(145deg,#f472b6,#db2777)", chip: "rgba(219,39,119,0.12)", chipC: "#9D174D", dot: "#ec4899" },
   { grad: "linear-gradient(145deg,#d6a77a,#a16207)", chip: "rgba(161,98,7,0.14)", chipC: "#854D0E", dot: "#ca8a04" },
 ];
-const EMPTY_CAT_CONF = { labels: {}, custom: [] };
+const EMPTY_CAT_CONF = { labels: {}, custom: [], learn: [] };
+// ── 仕分けを覚える（2026-10-20 拓也さん「タブの分類が違ったときに別のタブに入れられるように。以降、近い系統のやつは自動的にAIでそのタブに入るように」）──
+// カードを別のタブへ移した／箱に入れる前の画面で選び直した＝AIの仕分けを本人が直した例。learn:[{t:題名, m:補足, from, to, at}] を
+// タブの設定（IndexedDB の "cats"・書き出しにも入る）に新しい順で持ち、放り込むたびにAIへ「この人の仕分けのくせ」として見せる。
+// 決めるのは本人のまま（AIの提案が先に当たるだけ・箱に入れる前の画面で選び直せる・覚えた例はタブの画面で消せる）。
+const LEARN_MAX = 40;         // 覚えておく例の数（古い物から消える）
+const LEARN_PROMPT_MAX = 25;  // AIに見せる例の数（多いほど1回のAI代が上がる）
+const TAB_EXAMPLES = 4;       // 自分で作ったタブごとに見せる「今入っている物」の数
+function learnAdd(conf, item, from, to) {
+  const t = String((item && item.title) || "").trim().slice(0, 40);
+  if (!t || !to || from === to) return conf;
+  const rest = (conf.learn || []).filter(x => x.t.toLowerCase() !== t.toLowerCase());
+  return { ...conf, learn: [{ t, m: String((item && item.meta) || "").trim().slice(0, 30), from: from || "", to, at: toDateStr(new Date()) }, ...rest].slice(0, LEARN_MAX) };
+}
 // 外から来た設定（書き出しファイル等）を安全な形に直す
 function cleanCatConf(c) {
   const labels = {}, custom = [], seen = new Set();
@@ -159,7 +173,33 @@ function cleanCatConf(c) {
       if (!/^c_[\w-]{1,40}$/.test(key) || !label || seen.has(key)) continue;
       seen.add(key); custom.push({ key, label, pal: Math.abs(Number(t.pal) || 0) % CUSTOM_PAL.length });
     }
-  return { labels, custom };
+  // 覚えた仕分け：行き先のタブが今あるものだけ（消したタブの例は捨てる）。同じ題名は新しい方だけ
+  const valid = new Set([...BASE_CAT_KEYS, ...custom.map(t => t.key)]), learn = [], seenT = new Set();
+  if (c && Array.isArray(c.learn))
+    for (const x of c.learn) {
+      const t = x && String(x.t || "").trim().slice(0, 40), to = x && String(x.to || "");
+      if (!t || !valid.has(to) || seenT.has(t.toLowerCase())) continue;
+      seenT.add(t.toLowerCase());
+      learn.push({ t, m: String(x.m || "").trim().slice(0, 30), from: String(x.from || "").slice(0, 44), to, at: String(x.at || "").slice(0, 10) });
+      if (learn.length >= LEARN_MAX) break;
+    }
+  return { labels, custom, learn };
+}
+// 放り込んだ時にAIへ見せる「この人の仕分けのくせ」＋「自分で作ったタブに今入っている物の例」（無ければ空文字＝いつもどおり）
+function buildLearnPrompt(conf, items) {
+  const lines = [];
+  const learn = ((conf && conf.learn) || []).filter(x => CATS[x.to]).slice(0, LEARN_PROMPT_MAX);
+  if (learn.length) {
+    lines.push("この人の仕分けのくせ（ユーザーが自分で別のタブへ直した例・新しい順）。放り込まれた物がこの例と同じ系統（同じ種類の物・同じ趣味・同じ用途・同じお店など）なら、上のカテゴリ定義より優先して、その例と同じカテゴリにする。系統が違う物にまで広げない:");
+    for (const x of learn) lines.push(`- 「${x.t}」${x.m ? `（${x.m}）` : ""} → ${x.to}（${CATS[x.to].label}）`);
+  }
+  const ex = [];
+  for (const k of catKeys().filter(k => k.startsWith("c_"))) {
+    const titles = (items || []).filter(it => it.category === k).slice(0, TAB_EXAMPLES).map(it => `「${String(it.title || "").slice(0, 28)}」`);
+    if (titles.length) ex.push(`- ${k}（${CATS[k].label}）: ${titles.join("")}`);
+  }
+  if (ex.length) { lines.push("自分で作ったタブに今入っている物の例（同じ系統の物はそのタブへ）:"); lines.push(...ex); }
+  return lines.join("\n");
 }
 function applyCatConf(conf) {
   for (const k of BASE_CAT_KEYS) CATS[k].label = (conf.labels && conf.labels[k]) || BASE_LABELS[k];
@@ -737,126 +777,295 @@ if (window.L && window.L.Icon) {
     shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
   });
 }
-const GEO_CACHE_KEY = "nb_geocache_v1";
-function loadGeoCache(){ try { return JSON.parse(localStorage.getItem(GEO_CACHE_KEY) || "{}"); } catch(e){ return {}; } }
+// v2（2026-10-20）：検索先を2つにした・題名だけで当たった場所は地名と照らすようにした＝v1 の「空振り」の記録は捨てて当たりだけ引き継ぐ
+const GEO_CACHE_KEY = "nb_geocache_v2";
+function loadGeoCache(){
+  try {
+    const c = JSON.parse(localStorage.getItem(GEO_CACHE_KEY) || "null");
+    if (c && typeof c === "object") return c;
+    const old = JSON.parse(localStorage.getItem("nb_geocache_v1") || "{}"), hits = {};
+    for (const k in old) if (old[k] && typeof old[k].lat === "number") hits[k] = { lat: old[k].lat, lng: old[k].lng };
+    return hits;
+  } catch(e){ return {}; }
+}
 function saveGeoCache(c){ try { localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(c)); } catch(e){} }
 function escHtml(s){ return String(s||"").replace(/[&<>"]/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
-// カテゴリ色のティアドロップ型ピン（予定=ピンク／行ってみたい=緑…でひと目で分かる）
-function pinIcon(color){
+// カテゴリ色のティアドロップ型ピン（予定=ピンク／行ってみたい=緑…でひと目で分かる）。おおよその場所は薄く・点線の縁
+function pinIcon(color, approx){
+  const st = approx ? `background:${color};opacity:0.6;border:2px dashed #fff` : `background:${color};border:2px solid #fff`;
   return window.L.divIcon({
     className: "nb-pin",
-    html: `<div style="width:20px;height:20px;border-radius:50% 50% 50% 0;background:${color};transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>`,
+    html: `<div style="width:20px;height:20px;border-radius:50% 50% 50% 0;${st};transform:rotate(-45deg);box-shadow:0 1px 4px rgba(0,0,0,0.4)"></div>`,
     iconSize: [20,20], iconAnchor: [10,20], popupAnchor: [0,-18]
   });
 }
-// 地名→座標（OSM Nominatim・無料）。利用規約に沿って呼び出しは1件ずつ間隔を空ける（呼び出し側で制御）。
-async function geocodeNominatim(q){
-  const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ja&q=${encodeURIComponent(q)}`, { headers: { "Accept": "application/json" } });
-  if (!r.ok) throw new Error("geocode failed");
+// 候補を見ている時の仮のピン（黒・大きめ）
+function tempIcon(){
+  return window.L.divIcon({
+    className: "nb-pin",
+    html: `<div style="width:26px;height:26px;border-radius:50% 50% 50% 0;background:#16161e;transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.45)"></div>`,
+    iconSize: [26,26], iconAnchor: [13,26], popupAnchor: [0,-24]
+  });
+}
+const POP_BTN = "font-size:12px;font-weight:700;border:none;background:#16161e;color:#fff;border-radius:8px;padding:6px 11px;cursor:pointer";
+const POP_BTN2 = "font-size:12px;font-weight:700;border:1px solid #d8d8e0;background:#fff;color:#3a3a44;border-radius:8px;padding:5px 10px;cursor:pointer";
+const POP_LINK = "font-size:12px;color:#2b6cb0;text-decoration:none";
+
+// ── 地名・店名→座標（2026-10-20 拓也さん「地図で出ないものがなくなるように、精度を上げたい」「キーワードで検索、候補を選べるように」）──
+// 検索先は2つ（どちらも OpenStreetMap のデータ・無料・キー不要）。日本の小さなお店は OSM に載っていないことがあるので、
+// 候補を並べて選べる・地図をタップして置ける・地名だけで置いた所は「おおよそ」と出す、で取りこぼしを無くす。
+// ・Nominatim：公式の利用ポリシーで「1秒1件まで」「入力しながらの自動補完は禁止」「結果は覚えておく」
+//   ＝検索ボタンを押した時と、地図を開いた時の自動配置（1件ずつ間隔を空ける・結果は localStorage に覚える）だけで呼ぶ
+//   （https://operations.osmfoundation.org/policies/nominatim/ ）
+// ・Photon（komoot）：公開サーバーは「常識的な回数なら利用可・使いすぎは制限」（https://photon.komoot.io ）
+// ・Google の検索結果はこの地図（Leaflet＋OSM）には出せない（Google Maps Platform の規約で Google 以外の地図との併用禁止）
+// ・国土地理院の住所検索は公式に「主に地理院地図からの利用を想定」（github.com/gsi-cyberjapan/gsimaps）＝使わない
+const AREA_KINDS = new Set(["country","state","region","province","county","city","town","village","municipality","district","borough","suburb","quarter","neighbourhood","locality","hamlet","administrative","postcode","island","city_district","state_district"]);
+let nomNext = 0;   // Nominatim は1秒に1件まで＝呼ぶ順に枠を取る（同時に呼んでも間隔が空く）
+function nomWait(){ const now = Date.now(), at = Math.max(now, nomNext); nomNext = at + 1100; return new Promise(r => setTimeout(r, at - now)); }
+// Nominatim の住所（「店, 通り, 町, 区, 都, 郵便番号, 日本」）を日本の順（都 区 町…）に短く
+function jpAddr(display, name){
+  const parts = String(display || "").split(/,\s*/).map(s => s.trim()).filter(Boolean);
+  if (parts.length && name && parts[0] === name) parts.shift();
+  const jp = parts[parts.length - 1] === "日本";
+  const rest = parts.filter(s => s !== "日本" && !/^\d{3}-?\d{4}$/.test(s));
+  const ord = jp ? rest.reverse() : rest;
+  return ord.filter((s, i) => !(ord[i + 1] && ord[i + 1].startsWith(s))).slice(0, 5).join(" ");   // 「渋谷 渋谷二丁目」→「渋谷二丁目」
+}
+async function searchNominatim(q, limit, near){
+  await nomWait();
+  let u = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=${limit || 5}&accept-language=ja&q=${encodeURIComponent(q)}`;
+  if (near && near.box) u += `&viewbox=${near.box.join(",")}${near.bounded ? "&bounded=1" : ""}`;   // 今見ている辺りを先に（bounded＝その範囲の中だけ）
+  let r;
+  try { r = await fetch(u, { headers: { "Accept": "application/json" } }); }
+  catch (e) { throw new Error("OpenStreetMap の検索（Nominatim）に届きませんでした（通信を確かめてください）"); }
+  if (!r.ok) throw new Error(`OpenStreetMap の検索（Nominatim）に届きませんでした（${r.status}）`);
   const arr = await r.json();
-  if (Array.isArray(arr) && arr.length) return { lat: parseFloat(arr[0].lat), lng: parseFloat(arr[0].lon) };
+  return (Array.isArray(arr) ? arr : []).map(x => {
+    const name = x.name || String(x.display_name || "").split(",")[0];
+    return { name, sub: jpAddr(x.display_name, name), lat: parseFloat(x.lat), lng: parseFloat(x.lon), approx: AREA_KINDS.has(x.addresstype || x.type || "") };
+  }).filter(c => c.name && isFinite(c.lat) && isFinite(c.lng));
+}
+async function searchPhoton(q, limit, near){
+  let u = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=${limit || 5}`;
+  if (near && near.center) u += `&lat=${near.center.lat.toFixed(4)}&lon=${near.center.lng.toFixed(4)}`;
+  let r;
+  try { r = await fetch(u); }
+  catch (e) { throw new Error("Photon の検索に届きませんでした（通信を確かめてください）"); }
+  if (!r.ok) throw new Error(`Photon の検索に届きませんでした（${r.status}）`);
+  const j = await r.json();
+  return ((j && j.features) || []).map(f => {
+    const p = f.properties || {}, co = (f.geometry && f.geometry.coordinates) || [];
+    const name = p.name || [p.street, p.housenumber].filter(Boolean).join(" ") || p.district || p.city || "";
+    const sub = [];
+    for (const s of [p.countrycode && p.countrycode !== "JP" ? p.country : "", p.state, p.city, p.county, p.district, p.locality, p.street, p.housenumber])
+      if (s && s !== name && !sub.includes(s)) sub.push(s);
+    return { name, sub: sub.join(" "), lat: +co[1], lng: +co[0], approx: p.osm_key === "place" || p.osm_key === "boundary" || AREA_KINDS.has(p.type) };
+  }).filter(c => c.name && isFinite(c.lat) && isFinite(c.lng));
+}
+function geoNorm(s){ return String(s || "").normalize("NFKC").toLowerCase().replace(/[\s・･,、。.\-‐－()（）「」]/g, ""); }
+function geoDist(a, b){   // km
+  const rad = x => x * Math.PI / 180, dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+// 検索窓の候補：2つの検索先をまとめて1つの一覧に（近い所の同じ名前は1つに・名前が検索語に合う物を先・地域は後ろ）。
+// errors＝届かなかった検索先（届いた方の候補だけで一覧を出し、届かなかったことは画面に出す）
+async function geoSearch(q, near){
+  const errors = [];
+  const [a, b] = await Promise.all([
+    searchNominatim(q, 6, near).catch(e => { errors.push(e.message || "OpenStreetMap（Nominatim）に届きませんでした"); return []; }),
+    searchPhoton(q, 6, near).catch(e => { errors.push(e.message || "Photon に届きませんでした"); return []; }),
+  ]);
+  const list = [];
+  for (const c of [...a, ...b]) {
+    if (list.some(x => geoDist(x, c) < 0.03 || (geoDist(x, c) < 0.2 && geoNorm(x.name) === geoNorm(c.name)))) continue;
+    list.push(c);
+  }
+  const nq = geoNorm(q);
+  const score = c => { const n = geoNorm(c.name); return (n.length >= 2 && (nq.includes(n) || n.includes(nq)) ? 0 : 1) + (c.approx ? 2 : 0); };
+  list.sort((x, y) => score(x) - score(y));
+  return { list: list.slice(0, 12), errors };
+}
+// 自動で置く時に Photon の当たりを信じてよいか（名前が検索語と合う・地域ではない）
+function geoNameOk(q, c){
+  if (!c || c.approx) return false;
+  const n = geoNorm(c.name), nq = geoNorm(q);
+  if (n.length >= 3 && nq.includes(n)) return true;
+  if (n.length >= 2 && n.includes(nq)) return true;
+  const longest = String(q).split(/\s+/).map(geoNorm).sort((x, y) => y.length - x.length)[0] || "";
+  return longest.length >= 3 && n.includes(longest);
+}
+
+// 地図に出すカード＝行ってみたい（と、場所の分かる予定）
+const isMapItem = it => it && (it.category === "basho" || (it.category === "event" && (it.place || it.addr)));
+// メモ（meta）から地名っぽい言葉だけ拾う（「渋谷駅徒歩5分」→「渋谷駅」・時間/期間/媒体などは捨てる）
+const GEO_NOISE = /^(\d|¥|￥)|(分|以内|期間|限定|オンライン|あとで|今週|今日|明日|km|ｍ|m|円|駅近|行きたい|気になる|おすすめ)$|^(instagram|インスタ|x|twitter|tiktok|youtube|web|ネット|サイト)/i;
+// 地名検索の言葉を「当たりやすい順」に組み立てる。住所(addr)・店名(place)はAIが写真や本文から読んだ物（2026-10-20〜）。
+// kind：exact＝そのまま信じる／near＝地名の近く（±約3km）だけで名前を探す／title＝名前だけ（当たった場所が地名から離れていないか照らす）／area＝地名だけ＝おおよそ
+// OSM ではお店が支店名なしの「一蘭」「ブルーボトルコーヒー」で載っていることが多い＝「渋谷駅 一蘭」では空振りし、
+// 渋谷駅の近くだけで「一蘭」を探すと渋谷店に当たる（2026-10-20 実測：清澄白河の近くの「ブルーボトルコーヒー」＝清澄白河の店の位置）
+function geoPlan(it){
+  const title = String(it.title || "").trim(), place = String(it.place || "").trim(), addr = String(it.addr || "").trim();
+  const cleanTitle = title.replace(/^(気になる|話題の|噂の|例の|あの|行きたい|注目の)/, "").trim();
+  const areas = String(it.meta || "").split(/[・,、/｜|\s]+/)
+    .map(s => s.trim().replace(/(から)?(徒歩|車で|電車で).*$/, "").replace(/(すぐ|近く|周辺|エリア)$/, ""))
+    .filter(s => s && s.length <= 14 && !GEO_NOISE.test(s));
+  // 番地まである住所は OSM で見つからないことが多い（「東京都江東区豊洲6-1-16」は空振り・2026-10-20 実測）＝丁目までに縮める
+  const block = addr.normalize("NFKC").replace(/(\d+)\s*(?:丁目)?\s*[-ー−‐の]\s*\d.*$/, "$1丁目").replace(/(\d+丁目).*$/, "$1");
+  // 「近く」の基準＝住所の丁目 → メモの地名（どれか見つかった物）
+  const anchors = [...(block && block !== addr ? [block] : []), ...areas.slice(0, 1)];
+  const steps = [];
+  const push = (q, kind) => { q = String(q || "").replace(/\s+/g, " ").trim(); if (q && !steps.some(s => s.q === q && s.kind === kind)) steps.push({ q, kind }); };
+  const named = anchors.length ? "title" : "exact";
+  if (addr) push(addr, "exact");
+  if (anchors.length) {
+    if (place) push(place, "near");
+    push(cleanTitle, "near");
+    // 正式名の先頭の語（ブランド名）でも近くを探す＝OSM は「ブルーボトルコーヒー」「一蘭」のように支店名なしで載っていることが多い
+    for (const b of [brandOf(place), brandOf(cleanTitle)]) if (b) push(b, "near");
+  }
+  if (place) { if (areas[0] && !place.includes(areas[0])) push(`${place} ${areas[0].replace(/駅$/, "")}`, "exact"); push(place, named); }
+  for (const a of areas.slice(0, 2)) push(`${cleanTitle} ${a.replace(/駅$/, "")}`, "exact");
+  push(cleanTitle, named);
+  if (title !== cleanTitle) push(title, named);
+  if (block && block !== addr) push(block, "area");   // 丁目＝おおよそ（数百m）
+  for (const a of areas.slice(0, 2)) push(a, "area");
+  return { steps: steps.slice(0, 12), areas, anchors };
+}
+// 先頭の語（「ブルーボトルコーヒー 清澄白河フラッグシップカフェ」→「ブルーボトルコーヒー」）。「カフェ」などのふつうの言葉は使わない
+const GEO_GENERIC = /^(カフェ|cafe|喫茶|喫茶店|バー|bar|レストラン|居酒屋|ラーメン|食堂|パン屋|ベーカリー|美術館|博物館|公園|神社|寺|ホテル|旅館|温泉|ショップ|お店|店|焼肉|寿司|鮨|そば|うどん|焼き鳥|焼鳥)$/i;
+function brandOf(s){
+  const t = String(s || "").trim().split(/\s+/)[0] || "";
+  return t.length >= 2 && t !== String(s || "").trim() && !GEO_GENERIC.test(t) ? t : "";
+}
+// 1枚のカードの場所を探す。名前だけで当たった場所が、メモの地名（「渋谷」など）から40km以上離れていたら別の店とみなして捨てる。
+// 戻り値：{lat,lng,approx}／null＝どの言葉でも見つからない／undefined＝cacheOnly で覚えている結果だけでは決まらない（または中止）
+// 検索先に届かない時は投げる（呼び出し側が画面に出す・空振りとして覚えない＝次に開いた時にもう一度探す）
+async function resolvePlace(it, cache, isCancelled, cacheOnly){
+  const { steps, anchors } = geoPlan(it);
+  if (!steps.length) return null;
+  const known = key => { const c = cache[key]; if (c && typeof c.lat === "number") return c; if (c && c.miss) return null; return undefined; };
+  const remember = (key, hit) => { cache[key] = hit ? { lat: hit.lat, lng: hit.lng, approx: !!hit.approx } : { miss: true }; return hit ? cache[key] : null; };
+  const lookup = async (q, usePhoton) => {
+    const k = known(q);
+    if (k !== undefined || cacheOnly) return k;
+    let hit = (await searchNominatim(q, 1))[0] || null;
+    if (!hit && usePhoton) hit = (await searchPhoton(q, 4)).find(x => geoNameOk(q, x)) || null;
+    return remember(q, hit);
+  };
+  const nearby = async (q, ap) => {
+    const key = `${q}@${ap.lat.toFixed(3)},${ap.lng.toFixed(3)}`;
+    const k = known(key);
+    if (k !== undefined || cacheOnly) return k;
+    const box = [ap.lng - 0.036, ap.lat + 0.03, ap.lng + 0.036, ap.lat - 0.03].map(v => v.toFixed(4));
+    const list = (await searchNominatim(q, 5, { box, bounded: true })).filter(x => geoNameOk(q, x));
+    list.sort((a, b) => geoDist(ap, a) - geoDist(ap, b));   // 一番近い店
+    return remember(key, list[0] || null);
+  };
+  let areaPt;   // 「近く」の基準の場所＝住所の丁目かメモの地名（undefined＝まだ探していない／null＝無い・見つからない）
+  const area = async () => {
+    if (areaPt !== undefined) return areaPt;
+    for (const a of anchors) {
+      const h = await lookup(a, false);
+      if (h === undefined) return undefined;
+      if (h) return (areaPt = h);
+    }
+    return (areaPt = null);
+  };
+  for (const s of steps) {
+    if (isCancelled()) return undefined;
+    if (s.kind === "near") {
+      const ap = await area();
+      if (ap === undefined) return undefined;
+      if (!ap) continue;
+      const h = await nearby(s.q, ap);
+      if (h === undefined) return undefined;
+      if (h) return { lat: h.lat, lng: h.lng, approx: false };
+      continue;
+    }
+    const h = await lookup(s.q, s.kind !== "area");
+    if (h === undefined) return undefined;
+    if (!h) continue;
+    if (s.kind === "title") {
+      const ap = await area();
+      if (ap === undefined) return undefined;
+      if (ap && geoDist(ap, h) > 40) continue;
+    }
+    return { lat: h.lat, lng: h.lng, approx: s.kind === "area" || !!h.approx };
+  }
   return null;
 }
 
-// 地名検索クエリを「ヒットしやすい順」に組み立てる。タイトル1発だと固有店名や感想まじりの名前で
-// 空振りするので、meta欄の地名（例「渋谷・徒歩5分」→「渋谷」）と組み合わせた候補も投げる。
-function buildGeoQueries(it){
-  const cand = [];
-  const push = (s) => { s = (s||"").replace(/\s+/g," ").trim(); if (s && !cand.includes(s)) cand.push(s); };
-  const title = (it.title||"").trim();
-  const place = (it.place||"").trim();
-  // 感想・接頭を軽く落とす（「気になる角打ちバー」→「角打ちバー」）
-  const cleanTitle = title.replace(/^(気になる|話題の|噂の|例の|あの|行きたい|注目の)/,"").trim();
-  // meta から地名っぽいトークンだけ拾う（時間/距離/期間などのノイズは除外）
-  const metaTokens = (it.meta||"").split(/[・,/｜|\s]+/).map(s=>s.trim()).filter(s =>
-    s && !/^\d/.test(s) && !/(分|駅|徒歩|以内|期間|限定|オンライン|あとで|今週|今日|明日|km|ｍ|m)$/.test(s)
-  );
-  if (place) push(place);                                  // 会場・店名が明示されていれば最優先
-  metaTokens.forEach(t => push(`${t} ${cleanTitle}`));     // 「渋谷 角打ちバー」
-  push(cleanTitle);                                        // 「角打ちバー」
-  push(title);                                             // 素のタイトル
-  metaTokens.forEach(t => push(t));                        // 最後の砦＝地名だけ（「渋谷」）
-  return cand.slice(0, 4);                                 // 投げすぎない（レート制限＆礼儀）
-}
-
-function BoxMap({ items, onPlan, onFixLocation }) {
+function BoxMap({ items, onPlan, onFixLocation, onAddPlace }) {
   const boxRef = useRef(null);    // 地図コンテナ
   const mapRef = useRef(null);    // Leaflet map本体
   const layerRef = useRef(null);  // マーカー層
-  const [pts, setPts] = useState([]);      // 解決済み {it,lat,lng}
-  const [failed, setFailed] = useState([]);// 座標にできなかった「行ってみたい」＝消さずに出す
-  const [loading, setLoading] = useState(false);
+  const tempRef = useRef(null);   // 候補を見ている時の仮のピン
+  const markersRef = useRef({});  // カードのid → ピン（一覧から飛ぶ）
+  const topRef = useRef(null);    // 検索欄（場所を選ぶ時はここまで戻す）
+  const focusAfter = useRef(null);// 場所を決めた・入れた直後にそのピンを開く
+  const [pts, setPts] = useState([]);       // 置けた {it,lat,lng,approx,how}
+  const [failed, setFailed] = useState([]); // 置けなかったカード＝消さずに一覧の先頭に出す
+  const [prog, setProg] = useState(null);   // 配置中 {done,total}
+  const [netErr, setNetErr] = useState(""); // 検索先に届かなかった（黙らず出す）
+  const [q, setQ] = useState("");
+  const [res, setRes] = useState(null);     // 検索の結果 {q, list, errors, mine}
+  const [searching, setSearching] = useState(false);
+  const [fixId, setFixId] = useState(null); // 場所を選んでいるカード
+  const [temp, setTemp] = useState(null);   // 仮のピン {name, sub, lat, lng, approx, tapped}
+  const fixRef = useRef(null); fixRef.current = fixId;
+  const fixItem = fixId != null ? (items || []).find(it => it.id === fixId) : null;
 
-  // ① 座標を解決：手動ピン→撮った場所(geo)→「行ってみたい/会場つき予定」は地名を複数候補でジオコーディング。
-  //    取れなかったものは無言で捨てず failed に貯めて画面に出す（＝ユーザーが自分で直せる）。
+  // ① 座標を決める：手動で決めた場所→撮った場所(geo)→「行ってみたい/場所つき予定」は住所・店名・題名・地名の順に探す。
+  //    覚えている結果だけで決まる物は先にまとめて置き、残りを1件ずつ探す。置けなかった物は消さずに一覧の先頭へ（自分で選べる）。
   useEffect(() => {
     let cancelled = false;
+    const isCancelled = () => cancelled;
     (async () => {
       const cache = loadGeoCache();
-      const isHit = (v) => v && typeof v.lat === "number";
-      const out = [];
-      const need = [];               // {it, queries}
+      const out = [], need = [], fails = [];
       for (const it of (items || [])) {
-        if (it.mapPin && typeof it.mapPin.lat === "number") {          // 手動で置いたピン（最優先）
-          out.push({ it, lat: it.mapPin.lat, lng: it.mapPin.lng });
-        } else if (it.geo && typeof it.geo.lat === "number" && typeof it.geo.lng === "number") {
-          out.push({ it, lat: it.geo.lat, lng: it.geo.lng });          // 撮った場所つき写真
-        } else if (it.category === "basho" || (it.category === "event" && it.place)) {
-          const queries = buildGeoQueries(it);
-          if (!queries.length) continue;
-          const cachedHit = queries.map(q => cache[q]).find(isHit);    // どれか1つでもキャッシュ済みなら使う
-          if (cachedHit) out.push({ it, lat: cachedHit.lat, lng: cachedHit.lng });
-          else need.push({ it, queries });
+        if (it.mapPin && typeof it.mapPin.lat === "number") out.push({ it, lat: it.mapPin.lat, lng: it.mapPin.lng, approx: false, how: "pin" });
+        else if (it.geo && typeof it.geo.lat === "number" && typeof it.geo.lng === "number") out.push({ it, lat: it.geo.lat, lng: it.geo.lng, approx: false, how: "geo" });
+        else if (isMapItem(it)) {
+          const hit = await resolvePlace(it, cache, isCancelled, true);
+          if (hit) out.push({ it, lat: hit.lat, lng: hit.lng, approx: hit.approx, how: "search" });
+          else if (hit === null) fails.push(it);
+          else need.push(it);
         }
       }
-      if (!cancelled) { setPts(out.slice()); setFailed([]); }
-      if (need.length) {
-        setLoading(true);
-        const fails = [];
-        for (const g of need) {
-          if (cancelled) break;
-          let found = null;
-          for (const q of g.queries) {
-            if (cancelled) break;
-            const cached = cache[q];
-            if (isHit(cached)) { found = cached; break; }               // 既知ヒット
-            if (cached && cached.miss) continue;                        // 既知の空振り→次の候補へ
-            try {
-              const c = await geocodeNominatim(q);
-              await new Promise(r => setTimeout(r, 1100));               // Nominatim 1req/s 遵守
-              if (c) { cache[q] = c; found = c; break; }
-              cache[q] = { miss: true };                                // 空振りも記録＝同じ検索を繰り返さない
-            } catch (e) { /* この候補は諦めて次へ */ }
-          }
-          if (isHit(found)) { out.push({ it: g.it, lat: found.lat, lng: found.lng }); if (!cancelled) setPts(out.slice()); }
-          else { fails.push(g.it); if (!cancelled) setFailed(fails.slice()); }
+      if (cancelled) return;
+      setPts(out.slice()); setFailed(fails.slice()); setNetErr("");
+      if (!need.length) { setProg(null); return; }
+      setProg({ done: 0, total: need.length });
+      let errs = 0;
+      for (let i = 0; i < need.length; i++) {
+        if (cancelled) return;
+        const it = need[i];
+        if (errs >= 2) { fails.push(it); continue; }   // 続けて届かない＝今は探さない（次に開いた時にもう一度）
+        try {
+          const hit = await resolvePlace(it, cache, isCancelled, false);
+          if (cancelled) return;
+          errs = 0;
+          if (hit) { out.push({ it, lat: hit.lat, lng: hit.lng, approx: hit.approx, how: "search" }); setPts(out.slice()); }
+          else { fails.push(it); setFailed(fails.slice()); }
+        } catch (e) {
+          if (cancelled) return;
+          errs++;
+          fails.push(it); setFailed(fails.slice());
+          setNetErr(String((e && e.message) || "地図の検索に届きませんでした"));
         }
-        saveGeoCache(cache);
-        if (!cancelled) setLoading(false);
+        saveGeoCache(cache);   // 途中で閉じても、そこまでの結果は次に使う
+        setProg({ done: i + 1, total: need.length });
       }
+      if (cancelled) return;
+      setFailed(fails.slice()); setProg(null);
     })();
     return () => { cancelled = true; };
   }, [items]);
 
-  // 「出せなかった場所」を手動で解決：正しい地名を入れてもらい、取れたら mapPin として保存（＝itemsに乗る→永続化＆再描画）
-  async function fixLocation(it){
-    const q = window.prompt("正しい地名・住所を入れてください（例：渋谷 恵比寿横丁）", it.title || "");
-    if (!q || !q.trim()) return;
-    const query = q.trim();
-    try {
-      setLoading(true);
-      const c = await geocodeNominatim(query);
-      setLoading(false);
-      if (c && onFixLocation) {
-        const cache = loadGeoCache(); cache[query] = c; saveGeoCache(cache);
-        onFixLocation(it.id, c);   // items更新→再解決でピン化し、failedからも自動で消える
-      } else {
-        window.alert("その名前でも場所が見つかりませんでした。もう少し詳しい地名や住所でお試しください。");
-      }
-    } catch (e) { setLoading(false); window.alert("場所の検索に失敗しました。通信環境をご確認ください。"); }
-  }
-
-  // ② 地図を一度だけ生成
+  // ② 地図を一度だけ生成（場所を選んでいる時は、地図をタップした所に仮のピン）
   useEffect(() => {
     if (!boxRef.current || mapRef.current || !window.L) return;
     const map = window.L.map(boxRef.current, { zoomControl: true });
@@ -865,65 +1074,264 @@ function BoxMap({ items, onPlan, onFixLocation }) {
     }).addTo(map);
     map.setView([35.681, 139.767], 11); // 既定＝東京
     layerRef.current = window.L.layerGroup().addTo(map);
+    map.on("click", e => {
+      if (fixRef.current == null) return;
+      setTemp({ name: "地図で選んだ場所", sub: `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`, lat: e.latlng.lat, lng: e.latlng.lng, tapped: true });
+    });
     mapRef.current = map;
     setTimeout(() => map.invalidateSize(), 120);
-    return () => { map.remove(); mapRef.current = null; layerRef.current = null; };
+    return () => { map.remove(); mapRef.current = null; layerRef.current = null; tempRef.current = null; };
   }, []);
 
-  // ③ pts変化でマーカー再描画＋範囲フィット
+  // ピンの吹き出しのボタンは、その時点の関数を呼ぶ（吹き出しは pts が変わった時しか作り直さない）
+  const act = useRef({});
+  act.current = { startFix, onPlan };
+
+  // ③ pts変化でマーカー再描画＋範囲フィット（候補を見ている・場所を選んでいる最中は動かさない）
   useEffect(() => {
     const map = mapRef.current, layer = layerRef.current;
     if (!map || !layer || !window.L) return;
-    layer.clearLayers();
+    layer.clearLayers(); markersRef.current = {};
     if (!pts.length) return;
     const bounds = [];
     for (const p of pts) {
-      const c = CATS[p.it.category] || {};
+      const c = catOf(p.it.category);
       const color = c.dot || "#2fd87a";
       const gmap = `https://www.google.com/maps?q=${p.lat},${p.lng}`;
+      const where = p.how === "geo" ? "撮った場所" : (p.it.place || (p.it.mapPin && p.it.mapPin.name) || "");
       const el = document.createElement("div");
-      el.style.minWidth = "150px";
+      el.style.minWidth = "160px";
       el.innerHTML =
         `<b style="font-size:13px">${escHtml(p.it.title)}</b>` +
-        `<div style="color:#8a8a96;font-size:11px;margin-top:2px">${escHtml(c.label||"")}${p.it.place ? " ・ 📍"+escHtml(p.it.place) : ""}</div>` +
+        `<div style="color:#8a8a96;font-size:11px;margin-top:2px">${escHtml(c.label||"")}${where ? " ・ 📍"+escHtml(where) : ""}</div>` +
+        (p.approx ? `<div style="color:#b5581f;font-size:11px;margin-top:3px">おおよその場所（地名だけで置きました）</div>` : "") +
         `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">` +
-          `<a href="${gmap}" target="_blank" rel="noopener noreferrer" style="font-size:12px;color:#2b6cb0;text-decoration:none">Googleマップで開く</a>` +
-          (p.it.category !== "event" ? `<button class="nb-plan" style="font-size:12px;font-weight:700;border:none;background:#16161e;color:#fff;border-radius:8px;padding:5px 10px;cursor:pointer">📅 予定に入れる</button>` : "") +
+          `<a href="${gmap}" target="_blank" rel="noopener noreferrer" style="${POP_LINK}">Googleマップで開く</a>` +
+          (p.it.category !== "event" ? `<button class="nb-plan" style="${POP_BTN}">📅 予定に入れる</button>` : "") +
+          `<button class="nb-fix" style="${POP_BTN2}">場所を直す</button>` +
         `</div>`;
-      const btn = el.querySelector(".nb-plan");
-      if (btn && onPlan) btn.addEventListener("click", () => { onPlan(p.it); map.closePopup(); });
-      window.L.marker([p.lat, p.lng], { icon: pinIcon(color) }).bindPopup(el).addTo(layer);
+      const pb = el.querySelector(".nb-plan");
+      if (pb) pb.addEventListener("click", () => { if (act.current.onPlan) act.current.onPlan(p.it); map.closePopup(); });
+      el.querySelector(".nb-fix").addEventListener("click", () => act.current.startFix(p.it));
+      markersRef.current[p.it.id] = window.L.marker([p.lat, p.lng], { icon: pinIcon(color, p.approx) }).bindPopup(el).addTo(layer);
       bounds.push([p.lat, p.lng]);
     }
-    if (bounds.length === 1) map.setView(bounds[0], 14);
-    else map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    const f = focusAfter.current, fm = f != null && markersRef.current[f];
+    if (fm) { focusAfter.current = null; map.setView(fm.getLatLng(), Math.max(map.getZoom(), 16)); fm.openPopup(); }
+    else if (fixRef.current == null && !tempRef.current) {
+      if (bounds.length === 1) map.setView(bounds[0], 14);
+      else map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    }
     setTimeout(() => map.invalidateSize(), 60);
   }, [pts]);
 
+  // ④ 仮のピン（候補をタップ／地図をタップ）。吹き出しから「ここにする」（場所を選んでいる時）か「＋ 行ってみたいに入れる」
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !window.L) return;
+    if (tempRef.current) { tempRef.current.remove(); tempRef.current = null; }
+    if (!temp) return;
+    const el = document.createElement("div");
+    el.style.minWidth = "170px";
+    el.innerHTML =
+      `<b style="font-size:13px">${escHtml(temp.name)}</b>` +
+      (temp.sub ? `<div style="color:#8a8a96;font-size:11px;margin-top:2px;line-height:1.5">${escHtml(temp.sub)}</div>` : "") +
+      (temp.approx ? `<div style="color:#b5581f;font-size:11px;margin-top:3px">地域の中心（おおよその場所）</div>` : "") +
+      `<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">` +
+        (fixId != null ? `<button class="nb-ok" style="${POP_BTN}">ここにする</button>` : `<button class="nb-add" style="${POP_BTN}">＋ ${escHtml(catOf("basho").label)}に入れる</button>`) +
+        `<a href="https://www.google.com/maps/search/?api=1&query=${temp.lat},${temp.lng}" target="_blank" rel="noopener noreferrer" style="${POP_LINK}">Googleマップで見る</a>` +
+      `</div>`;
+    const ok = el.querySelector(".nb-ok"), add = el.querySelector(".nb-add");
+    if (ok) ok.addEventListener("click", () => confirmPlace(temp));
+    if (add) add.addEventListener("click", () => addPlace(temp));
+    const m = window.L.marker([temp.lat, temp.lng], { icon: tempIcon(), zIndexOffset: 1000 }).bindPopup(el).addTo(map);
+    tempRef.current = m;
+    if (!temp.tapped) map.setView([temp.lat, temp.lng], Math.max(map.getZoom(), temp.approx ? 13 : 16));
+    m.openPopup();
+  }, [temp, fixId]);
+
+  // 今見ている辺り（拡大している時だけ）＝検索で近くの候補を先に出す
+  function nearNow(){
+    const map = mapRef.current;
+    if (!map || map.getZoom() < 8) return null;
+    const b = map.getBounds(), c = map.getCenter();
+    const lng = v => Math.max(-180, Math.min(180, v)).toFixed(4), lat = v => Math.max(-90, Math.min(90, v)).toFixed(4);
+    return { center: { lat: c.lat, lng: c.lng }, box: [lng(b.getWest()), lat(b.getNorth()), lng(b.getEast()), lat(b.getSouth())] };
+  }
+  // 画面をその場所へ（上の固定の見出し約70px・下のタブと放り込むボタン約150pxに隠れない位置）。
+  // なめらかなスクロールは中身が変わると途中で止まる（headless で実測）＝すぐ動かす。always＝見えていても上へそろえる
+  function showAt(el, always){
+    if (!el) return;
+    const r = el.getBoundingClientRect(), top = 84;
+    if (!always && r.top >= top - 4 && r.bottom <= window.innerHeight - 150) return;
+    window.scrollTo(0, Math.max(0, window.scrollY + r.top - top));
+  }
+  // 地図に出るカード全部（置けなかった物→おおよそ→置けた物の順）
+  const rows = [
+    ...failed.map(it => ({ it, st: "none" })),
+    ...pts.filter(p => p.approx).map(p => ({ it: p.it, st: "approx", p })),
+    ...pts.filter(p => !p.approx).map(p => ({ it: p.it, st: "ok", p })),
+  ];
+  function mineOf(s){
+    const n = geoNorm(s);
+    if (!n) return [];
+    return rows.filter(r => geoNorm([r.it.title, r.it.meta, r.it.place, r.it.addr].join(" ")).includes(n)).slice(0, 8);
+  }
+  async function runSearch(text, forFix, near){
+    const s = String(text || "").trim();
+    if (!s) return;
+    setSearching(true); setTemp(null);
+    try {
+      const r = await geoSearch(s, near || nearNow());
+      setRes({ q: s, list: r.list, errors: r.errors, mine: forFix ? [] : mineOf(s) });
+    } catch (e) {
+      setRes({ q: s, list: [], errors: [String((e && e.message) || e)], mine: [] });
+    } finally { setSearching(false); }
+  }
+  function startFix(it){
+    setFixId(it.id); setTemp(null); setRes(null);
+    const map = mapRef.current;
+    if (map) map.closePopup();
+    // 最初の検索語＝住所 → 店名 → 題名＋メモの地名（「角打ちバー 渋谷」）。今のピン（おおよそ）があればその辺りを先に探し、地図もそこへ寄せる
+    const { areas } = geoPlan(it);
+    const t = String(it.title || "").replace(/^(気になる|話題の|噂の|例の|あの|行きたい|注目の)/, "").trim();
+    const s = String(it.addr || it.place || (areas[0] ? `${t} ${areas[0].replace(/駅$/, "")}` : it.title) || "").trim();
+    setQ(s);
+    const p = pts.find(x => x.it.id === it.id);
+    let near = null;
+    if (p) {
+      near = { center: { lat: p.lat, lng: p.lng }, box: [p.lng - 0.06, p.lat + 0.05, p.lng + 0.06, p.lat - 0.05].map(v => v.toFixed(4)) };
+      if (map) map.setView([p.lat, p.lng], Math.max(map.getZoom(), 14));
+    }
+    showAt(topRef.current, true);
+    runSearch(s, true, near);
+  }
+  function cancelFix(){ setFixId(null); setTemp(null); setRes(null); setQ(""); }
+  function preview(c){
+    setTemp(c);
+    showAt(boxRef.current);
+  }
+  function confirmPlace(c){
+    const it = (items || []).find(x => x.id === fixRef.current);
+    if (!it || !onFixLocation) return;
+    focusAfter.current = it.id;
+    onFixLocation(it.id, { lat: c.lat, lng: c.lng, ...(c.tapped ? {} : { name: c.name, sub: c.sub || "" }) });
+    setFixId(null); setTemp(null); setRes(null); setQ("");
+  }
+  function addPlace(c){
+    if (!onAddPlace) return;
+    focusAfter.current = onAddPlace(c);
+    setTemp(null);
+  }
+  function focusPin(id){
+    const m = markersRef.current[id], map = mapRef.current;
+    if (!m || !map) return;
+    setTemp(null);
+    map.setView(m.getLatLng(), Math.max(map.getZoom(), 15));
+    m.openPopup();
+    showAt(boxRef.current);
+  }
+
+  const rowSub = r => r.st === "none" ? "まだ地図に置けていません" : r.p && r.p.how === "geo" ? "撮った場所" : (r.it.place || (r.it.mapPin && r.it.mapPin.name) || r.it.addr || r.it.meta || "");
+  const placeRow = r => (
+    <div key={`m${r.it.id}`} style={S.mapRow} onClick={() => r.st === "none" ? startFix(r.it) : focusPin(r.it.id)}>
+      <span style={{...S.mapRowDot, background: catOf(r.it.category).dot}}/>
+      <span style={S.mapRowText}>
+        <span style={S.mapRowTitle}>{r.it.title}</span>
+        <span style={S.mapRowSub}>{rowSub(r)}</span>
+      </span>
+      {r.st === "none" && <span style={S.mapBadgeNone}>未配置</span>}
+      {r.st === "approx" && <span style={S.mapBadgeApprox}>おおよそ</span>}
+      <span style={r.st === "none" ? S.mapRowBtnMain : S.mapRowBtn} onClick={e => { e.stopPropagation(); startFix(r.it); }}>{r.st === "none" ? "場所を選ぶ" : "直す"}</span>
+    </div>
+  );
+  const candRow = (c, i) => {
+    const on = temp && !temp.tapped && temp.lat === c.lat && temp.lng === c.lng;
+    return (
+      <div key={`c${i}`} style={{...S.mapRow, ...(on ? S.mapRowOn : {})}} onClick={() => preview(c)}>
+        <span style={S.mapRowPin}>📍</span>
+        <span style={S.mapRowText}>
+          <span style={S.mapRowTitle}>{c.name}</span>
+          <span style={S.mapRowSub}>{c.sub || "（住所の表示なし）"}</span>
+        </span>
+        {c.approx && <span style={S.mapBadgeApprox}>地域</span>}
+        <span style={S.mapRowBtnMain} onClick={e => { e.stopPropagation(); fixId != null ? confirmPlace(c) : addPlace(c); }}>{fixId != null ? "ここにする" : "＋ 入れる"}</span>
+      </div>
+    );
+  };
+  const gSearch = s => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s || "")}`;
+  const showEmpty = pts.length === 0 && failed.length === 0 && !prog && !res && !temp && fixId == null;
+
   return (
-    <div style={{ position: "relative", padding: "0 16px 150px" }}>
-      <div ref={boxRef} style={S.mapBox} />
-      {loading && <div style={S.mapLoading}>📍 場所を地図に配置中…</div>}
-      {pts.length === 0 && failed.length === 0 && !loading && (
-        <div style={S.mapEmpty}>
-          <div style={S.mapEmptyEmoji}>🗺️</div>
-          <div style={S.mapEmptyTitle}>行きたい場所が、地図に貯まる</div>
-          <div style={S.mapEmptyText}>「行ってみたい」お店やスポットを放り込むと、ここに常時ピンで表示されます。撮った場所つきの写真も出ます。</div>
+    <div style={{ padding: "0 16px 150px" }}>
+      <div ref={topRef}/>
+      {fixItem && (
+        <div style={S.mapFixBar}>
+          <div style={{flex:1, minWidth:0}}>
+            <div style={S.mapFixLabel}>📍 場所を選んでいます</div>
+            <div style={S.mapFixTitle}>{fixItem.title}</div>
+            <div style={S.mapFixSub}>下の候補をタップ、または地図をタップしてピンを置けます。<a href={gSearch(fixItem.title)} target="_blank" rel="noopener noreferrer" style={S.mapFixLink}>Googleマップで場所を確かめる ↗</a></div>
+          </div>
+          <span style={S.mapFixCancel} onClick={cancelFix}>やめる</span>
         </div>
       )}
-      {failed.length > 0 && (
-        <div style={S.mapFailWrap}>
-          <div style={S.mapFailHead}>📍 地図に出せなかった場所（{failed.length}）</div>
-          <div style={S.mapFailNote}>名前だけだと場所を特定できないことがあります。地名を足すとピンが立ちます。</div>
-          {failed.map(it => (
-            <div key={it.id} style={S.mapFailRow}>
-              <div style={S.mapFailTitle}>{it.title}</div>
-              <div style={S.mapFailBtns}>
-                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(it.title||"")}`} target="_blank" rel="noopener noreferrer" style={S.mapFailLink}>Googleマップで探す</a>
-                <button style={S.mapFailFix} onClick={()=>fixLocation(it)}>地名を指定</button>
+      {/* キーワードで探す（Nominatim の利用ポリシー＝入力しながらの自動補完は禁止 → 「探す」を押した時だけ） */}
+      <form style={S.mapSearch} onSubmit={e => { e.preventDefault(); if (document.activeElement) document.activeElement.blur(); runSearch(q, fixId != null); }}>
+        <span style={S.mapSearchIcon}>🔍</span>
+        <input type="search" value={q} onChange={e => setQ(e.target.value)} enterKeyHint="search"
+          placeholder={fixItem ? "店名・地名・住所で探す" : "お店・地名・住所で探す"} style={S.mapSearchInput} />
+        {q && <span style={S.mapSearchClear} onClick={() => { setQ(""); setRes(null); setTemp(null); }}>✕</span>}
+        <button type="submit" style={{...S.mapSearchBtn, ...((searching || !q.trim()) ? { opacity: 0.45 } : {})}} disabled={searching || !q.trim()}>{searching ? "探し中" : "探す"}</button>
+      </form>
+      <div style={{ position: "relative" }}>
+        <div ref={boxRef} style={S.mapBox} />
+        {prog && <div style={S.mapLoading}>📍 場所を地図に配置中…（{prog.done}/{prog.total}）</div>}
+        {showEmpty && (
+          <div style={S.mapEmpty}>
+            <div style={S.mapEmptyEmoji}>🗺️</div>
+            <div style={S.mapEmptyTitle}>行きたい場所が、地図に貯まる</div>
+            <div style={S.mapEmptyText}>「行ってみたい」お店やスポットを放り込むと、ここに常時ピンで表示されます。撮った場所つきの写真も出ます。上の検索からお店を探して入れることもできます。</div>
+          </div>
+        )}
+      </div>
+      {netErr && <div style={S.mapErr}>⚠ {netErr}。置けていない場所は、地図を開き直すともう一度探します。</div>}
+
+      {/* スクロールの窓：検索した時は候補、ふだんは地図に出るカードの一覧（置けなかった物が先頭） */}
+      {(searching || res || rows.length > 0) && (
+        <div style={S.mapPanel}>
+          {searching ? (
+            <div style={S.mapPanelHead}><span>「{q.trim()}」を探しています…</span></div>
+          ) : res ? (
+            <>
+              <div style={S.mapPanelHead}>
+                <span style={{minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>「{res.q}」の候補（{res.list.length}）</span>
+                <span style={S.mapPanelClose} onClick={() => { setRes(null); setTemp(null); }}>✕ 閉じる</span>
               </div>
-            </div>
-          ))}
+              {res.errors.length > 0 && <div style={{...S.mapErr, margin:"0 12px 8px"}}>⚠ {res.errors.join("／")}。{res.list.length ? "届いた方の候補だけ出しています。" : ""}</div>}
+              <div style={S.mapPanelScroll}>
+                {res.mine.length > 0 && <div style={S.mapSecHead}>箱の中（{res.mine.length}）</div>}
+                {res.mine.map(placeRow)}
+                {res.mine.length > 0 && res.list.length > 0 && <div style={S.mapSecHead}>地図の候補</div>}
+                {res.list.map(candRow)}
+                {res.list.length === 0 && res.mine.length === 0 && (
+                  <div style={S.mapPanelEmpty}>
+                    候補が見つかりませんでした。店名＋地名（例：渋谷 一蘭）や住所に変えて探してください。
+                    {fixId != null && "見つからない時は、地図をタップしてピンを置けます。"}
+                    <a href={gSearch(res.q)} target="_blank" rel="noopener noreferrer" style={{...S.mapFixLink, marginLeft:4}}>Googleマップで探す ↗</a>
+                  </div>
+                )}
+              </div>
+              <div style={S.mapCredit}>検索：OpenStreetMap のデータ（Nominatim・Photon）。小さなお店は載っていないことがあります。</div>
+            </>
+          ) : (
+            <>
+              <div style={S.mapPanelHead}>
+                <span>地図の場所（{rows.length}）</span>
+                {failed.length > 0 && <span style={S.mapBadgeNone}>未配置 {failed.length}</span>}
+              </div>
+              <div style={S.mapPanelScroll}>{rows.map(placeRow)}</div>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -948,6 +1356,7 @@ function App() {
   const [resultTime, setResultTime] = useState("");   // AIが読み取った開始時刻
   const [resultEnd, setResultEnd] = useState("");     // AIが読み取った終了時刻
   const [resultPlace, setResultPlace] = useState(""); // AIが読み取った場所
+  const [resultAddr, setResultAddr] = useState("");   // AIが読み取った住所（行ってみたい・予定＝地図のピンに使う）
   const [scanning, setScanning] = useState(null);
   const [askOpen, setAskOpen] = useState(false);
   const [askInput, setAskInput] = useState("");
@@ -973,7 +1382,19 @@ function App() {
   const [addAmount, setAddAmount] = useState("");        // 日付タップ→支出を手で入れる
   const [addHimoku, setAddHimoku] = useState("食費");
   const [kakeiMonth, setKakeiMonth] = useState(null);    // 家計簿を開いている月 "YYYY-MM"（null＝閉じている）
-  const [moneyEdit, setMoneyEdit] = useState(null);      // 支出を直す {id, title, amount, himoku, date}
+  const [moneyEdit, setMoneyEdit] = useState(null);      // 支出を直す {id, title, amount, himoku, date, img}
+  // レシートの写真（2026-10-20 拓也さん「支出にレシート写真機能つけて」）。撮る・選ぶ→AIが金額・店・日付・費目を読んで入力欄に入れる
+  const [addReceipt, setAddReceipt] = useState(null);    // 日付タップ→支出に付けるレシートの写真
+  const [receiptBusy, setReceiptBusy] = useState("");    // 読み取り中の場所 "add"／"edit"
+  const [receiptMsg, setReceiptMsg] = useState(null);    // {t:"ok"|"warn"|"err", s} 読めた・読めなかったは必ず画面に出す
+  const receiptRef = useRef(null);
+  const receiptCtxRef = useRef("add");
+  const receiptFlowRef = useRef(false);                  // レシートから開いた＝キーボードを出さない（写真を選ぶ画面とぶつかる）
+  // 別のタブへ移す
+  const [moveId, setMoveId] = useState(null);            // 移す先を選んでいるカードのid
+  const [moveNew, setMoveNew] = useState("");            // 「新しいタブを作って移す」の名前
+  const [toast, setToast] = useState(null);              // {s, undo} 画面の下に数秒出す知らせ（元に戻すつき）
+  const toastTimer = useRef(null);
   const addTitleRef = useRef(null);
   const addAmountRef = useRef(null);
   const focusHoldRef = useRef(null); // 日付タップ時にキーボードを出しておく仮の入力欄
@@ -1056,7 +1477,7 @@ function App() {
   useEffect(() => {
     if (!addDay) return;
     const el = addType === "money" ? addAmountRef.current : addTitleRef.current;
-    if (el) { try { el.focus(); } catch (e) {} }
+    if (el && !receiptFlowRef.current) { try { el.focus(); } catch (e) {} }
     const tmp = focusHoldRef.current; focusHoldRef.current = null;
     if (tmp) setTimeout(() => tmp.remove(), 300);
   }, [addDay]);
@@ -1113,7 +1534,7 @@ function App() {
     idbPutAtt(IDB_CATS_KEY, c).catch(e => alert("タブの設定を保存できませんでした（" + ((e && e.message) || e) + "）。もう一度試してください。"));
   }
   function openTabEdit() {
-    setTabEdit({ labels: Object.fromEntries(BASE_CAT_KEYS.map(k => [k, catConf.labels[k] || BASE_LABELS[k]])), custom: catConf.custom.map(t => ({ ...t })), newName: "", delKey: null });
+    setTabEdit({ labels: Object.fromEntries(BASE_CAT_KEYS.map(k => [k, catConf.labels[k] || BASE_LABELS[k]])), custom: catConf.custom.map(t => ({ ...t })), learn: (catConf.learn || []).map(x => ({ ...x })), newName: "", delKey: null });
   }
   function addCustomTab() {
     const name = tabEdit.newName.trim().slice(0, 12);
@@ -1134,7 +1555,7 @@ function App() {
     // 消したタブのカードは「情報」へ（カードは消さない）
     if (gone.length) setItems(prev => prev.map(it => gone.includes(it.category) ? { ...it, category: "joho" } : it));
     if (gone.includes(filter)) setFilter("all");
-    saveCatConf({ labels, custom });
+    saveCatConf({ labels, custom, learn: t.learn || [] });   // 消したタブへ覚えた例は cleanCatConf が捨てる
     setTabEdit(null);
   }
 
@@ -1213,7 +1634,8 @@ function App() {
       if (bkIn.cats) {
         const have = new Set(catConf.custom.map(t => t.key));
         saveCatConf(mode === "replace" ? bkIn.cats
-          : { labels: { ...bkIn.cats.labels, ...catConf.labels }, custom: [...catConf.custom, ...bkIn.cats.custom.filter(t => !have.has(t.key))] });
+          : { labels: { ...bkIn.cats.labels, ...catConf.labels }, custom: [...catConf.custom, ...bkIn.cats.custom.filter(t => !have.has(t.key))],
+              learn: [...(catConf.learn || []), ...(bkIn.cats.learn || [])] });   // 覚えた仕分けも足す（同じ題名はこの端末の方を残す）
       }
       const maxId = Math.max(0, ...r.next.map(it => typeof it.id === "number" ? it.id : 0));
       if (maxId >= nextId.current) nextId.current = maxId + 1;   // この後に入れるカードのidがぶつからないように
@@ -1434,6 +1856,9 @@ function App() {
         ...BASE_CAT_KEYS.filter(k => CATS[k].label !== BASE_LABELS[k]).map(k => `  （${k} はユーザーの呼び名「${CATS[k].label}」）`),
         ...catKeys().filter(k => k.startsWith("c_")).map(k => `- ${k}: ユーザーが自分で作ったタブ「${CATS[k].label}」（名前が中身のヒント。名前にはっきり当てはまる時は上の既定より優先）`),
       ].join("\n");
+      // 本人が直した仕分け（別のタブへ移した例）＝似た系統はそのタブへ。例が無ければ何も足さない（AI代も増えない）
+      const learnPrompt = buildLearnPrompt(catConf, items);
+      const hasLearn = (catConf.learn || []).some(x => CATS[x.to]);
       const prompt = `あなたは「デテコイ」（気になったものを何でも放り込み、必要な時に呼び出せる箱）アプリの仕分けエンジンです。
 ユーザーが放り込んだ内容を読み、下のカテゴリのどれか1つに分類してJSONだけ返してください。
 
@@ -1448,6 +1873,7 @@ function App() {
 - kyomi: 趣味・関心事・なんとなく気になるもの（実用でも予定でもない"好き"）
 - money: 支出の記録（レシート・領収書・支払い完了画面・購入明細・カード利用通知）＝もう払ったお金。まだ買っていない欲しい物は mono
 ${catPromptExtra}
+${learnPrompt}
 ${imgInstruction}
 
 精度ルール（最重要・ここの精度がアプリの価値）：
@@ -1457,6 +1883,7 @@ ${imgInstruction}
   **不合格＝一般名詞だけ（「腕時計 黒」等）、「おすすめ」「通販」「人気」などの余計な語、長い文章**。検索結果ページで探し直す羽目になるクエリは失敗とみなす。
 - ただし**でっち上げは厳禁**：写っている文字・本文にない型番や店名を創作しない。読み取れない文字は無理に補完せず、読み取れた範囲で最も具体的に書き、confidenceを下げる。
 - **予定(event)/タスク(task)は「いつ・どこで」をスケジュールに入れられるよう抽出する**：本文・画像(チラシ/スクショ/案内)から日付・開始時刻・終了時刻・場所(会場/店名/住所)を読み取り、下記time/endTime/placeに入れる。読み取れないものだけ空文字。時刻は24時間HH:MM。「19:00〜21:00」なら開始と終了を両方。
+- **行ってみたい(basho)は地図にピンを立てる**：店名・施設名・支店名はplaceへ、住所が写っていればaddrへ、最寄り駅や地名(例:渋谷・清澄白河駅)はmetaへ入れる。写っていない住所や支店名を記憶で補わない。
 - **画像/本文にSNSのID(@〜)やURLが"はっきり写っている"なら、その本人ページのURLを組み立ててlinkに入れる**（スクショから直接そのページへ飛べるようにするため）：
   Instagram=https://www.instagram.com/<id>/ ／ X(Twitter)=https://x.com/<id> ／ TikTok=https://www.tiktok.com/@<id> ／ YouTube=https://www.youtube.com/@<handle> ／ その他の明示URLはそのまま記載。
   **⚠️絶対に推測・記憶で補完しない。画面に写っている文字だけを根拠にする。読み取れない・自信がない場合は必ず空文字**（存在しないアカウントに飛ばすのは事故）。IDは@を除いた正確な綴りで。
@@ -1469,7 +1896,7 @@ ${imgInstruction}
   - レシピ以外のカテゴリでは ingredients は空配列
 
 以下のJSON形式だけを返してください。前置きや説明、マークダウンのコードブロックは一切不要:
-{"category":"${catKeys().join("|")}","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスク・支出のみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","ingredients":[{"name":"材料名","qty":"分量(原文どおり。なければ空文字)"}],"ingSrc":"page|screen|guess のどれか。材料が空なら空文字","servings":"何人分(分かれば。例:2人分)。なければ空文字","amount":"支出のときだけ合計金額(円・数字だけ。例 1280)。それ以外・読めなければ空文字","himoku":"支出のときだけ費目(上の一覧から1つ)。それ以外は空文字","confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
+{"category":"${catKeys().join("|")}","title":"30字以内・ブランド名/型番/店名など具体名を必ず含む","meta":"補足(場所/価格/媒体など)。『候補: A / B』のような併記は禁止・1つに断定する","chip":"価格or日時or状態の短いラベル","searchQuery":"検索窓にそのまま貼れば1件目にその物が出る語(ブランド＋型番/品番/正式名称)。一般名詞だけ・余計な語・長文は禁止","date":"YYYY-MM-DD形式（予定・タスク・支出のみ。本文に日付が明記されていれば必ず記載。今日は${toDateStr(today)}。「来週金曜」など相対表現も絶対日付に変換すること。日付が読み取れない場合のみ空文字）","time":"HH:MM形式の開始時刻(予定/タスクで読み取れれば必ず)。なければ空文字","endTime":"HH:MM形式の終了時刻。あれば。なければ空文字","place":"開催場所・会場・店名・住所(予定で読み取れれば)。行ってみたい(basho)なら店名・施設名に支店名まで足した正式な名前(例:ブルーボトルコーヒー 清澄白河フラッグシップカフェ)。なければ空文字","addr":"住所(予定・行ってみたいで、画像/本文に住所がはっきり書いてある時だけ。書いてあるとおりに。記憶や推測で作らない)。なければ空文字","link":"画像/本文にはっきり写っているSNSのIDやURLから組み立てた本人ページのURL(https://で始まる)。推測厳禁・読み取れなければ空文字","linkLabel":"linkのボタン文言(例:Instagramで開く/Xで開く/TikTokで開く/サイトを開く)。linkが空なら空文字","ingredients":[{"name":"材料名","qty":"分量(原文どおり。なければ空文字)"}],"ingSrc":"page|screen|guess のどれか。材料が空なら空文字","servings":"何人分(分かれば。例:2人分)。なければ空文字","amount":"支出のときだけ合計金額(円・数字だけ。例 1280)。それ以外・読めなければ空文字","himoku":"支出のときだけ費目(上の一覧から1つ)。それ以外は空文字",${hasLearn ? `"learned":"上の『仕分けのくせ』の例に従ってカテゴリを決めた時だけ、従った例の題名をそのまま。それ以外は空文字",` : ""}"confidence":"特定の確信度を正直に。曖昧なら0.5未満、明確なら0.8以上"}`;
 
       const content = [];
       // 見せる画像＝放り込まれた写真。無ければYouTubeのサムネ（題名が曖昧でも料理や商品が写っている）
@@ -1523,6 +1950,7 @@ ${imgInstruction}
       setResultTime(parsed.time || "");
       setResultEnd(parsed.endTime || "");
       setResultPlace(parsed.place || "");
+      setResultAddr(String(parsed.addr || "").slice(0, 80));
       // URL：入力から抽出。写真のみの場合：Google検索URLを自動生成
       parsed.sourceUrl = sourceUrl
         || (img ? `https://www.google.com/search?q=${encodeURIComponent(parsed.searchQuery || parsed.title)}` : null);
@@ -1569,6 +1997,13 @@ ${imgInstruction}
       } else {
         delete parsed.ingredients; delete parsed.ingSrc; delete parsed.servings; delete parsed.ingUrl;
       }
+      // AIが決めた種類を控える（箱に入れる前に選び直したら「直した例」として覚える）。
+      // 覚えた例に従った時は、その例を画面に出す＝なぜそのタブなのかが見える。AIの申告は覚えた例と照らして合う時だけ使う
+      parsed._aiCat = parsed.category;
+      const lw = String(parsed.learned || "").replace(/[「」]/g, "").trim();
+      const hit = lw && (catConf.learn || []).find(x => x.to === parsed.category && (x.t === lw || (lw.length >= 3 && (x.t.includes(lw) || lw.includes(x.t)))));
+      parsed._learned = hit ? hit.t : "";
+      delete parsed.learned;
       if (notes.length) setError(notes.join("\n"));
       setResult(parsed);
     } catch (e) {
@@ -1652,13 +2087,17 @@ ${imgInstruction}
   }
   function resetAddForm() {
     setAddDay(null); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none"); setAddType("event"); setAddAtts([]); setAddAmount("");
+    setAddReceipt(null); setReceiptMsg(null); receiptFlowRef.current = false;
   }
   // 日付をタップ＝その日にすぐ書ける（2026-10-20 拓也さん「カレンダーの日付をタップしたらそのまま入力できるように」）。
   // iPhone はタップの中で入力欄にフォーカスしないとキーボードが出ない＝仮の入力欄にいったんフォーカスし、シートが出たら本物へ移す
-  function openDayAdd(dStr, type) {
+  function openDayAdd(dStr, type, fromReceipt) {
     setSelDay(dStr);
     setAddDay(dStr); setAddTitle(""); setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none");
     setAddType(type || "event"); setAddAmount(""); setAddHimoku("食費"); setAddAtts([]);
+    setAddReceipt(null); setReceiptMsg(null);
+    receiptFlowRef.current = !!fromReceipt;
+    if (fromReceipt) return;                            // レシートから＝写真を選ぶ画面を先に出す（キーボードは出さない）
     try {
       const tmp = document.createElement("input");
       tmp.setAttribute("aria-hidden", "true");
@@ -1669,16 +2108,88 @@ ${imgInstruction}
   }
   // 支出を直す（家計簿・その日の支出・カードの⋮から）
   function openMoneyEdit(it) {
-    setMenuId(null);
-    setMoneyEdit({ id: it.id, title: it.title || "", amount: it.amount ? String(it.amount) : "", himoku: it.himoku || "その他", date: it.date || it.added || toDateStr(new Date()) });
+    setMenuId(null); setReceiptMsg(null);
+    setMoneyEdit({ id: it.id, title: it.title || "", amount: it.amount ? String(it.amount) : "", himoku: it.himoku || "その他", date: it.date || it.added || toDateStr(new Date()), img: it._img || "", imgNew: false });
   }
   function saveMoneyEdit() {
     const m = moneyEdit, amt = parseAmount(m.amount);
     if (!amt) return;
     setItems(prev => prev.map(it => it.id === m.id
-      ? { ...it, category: "money", title: m.title.trim() || m.himoku, amount: amt, himoku: m.himoku, date: m.date || it.date, chip: fmtYen(amt), meta: m.himoku }
+      ? { ...it, category: "money", title: m.title.trim() || m.himoku, amount: amt, himoku: m.himoku, date: m.date || it.date, chip: fmtYen(amt), meta: m.himoku,
+          ...(m.imgNew && m.img ? { _img: m.img } : {}) }
       : it));
-    setMoneyEdit(null);
+    setMoneyEdit(null); setReceiptMsg(null);
+  }
+
+  // ── レシートの写真（2026-10-20）。家計簿・日付タップの「支出」・支出を直す画面から撮る／選ぶ。──
+  // 写真はカードに付ける（いつもの大きさ）。AIには数字が読めるよう大きめ・高画質で見せ、金額・店・日付・費目を入力欄へ入れる。
+  // 保存する前に必ず本人が確かめて直せる（競合の家計簿アプリも保存前に確認を挟む）。読めなかった事実は必ず画面に出す。
+  function pickReceipt(ctx) {
+    receiptCtxRef.current = ctx;
+    if (receiptRef.current) { receiptRef.current.value = ""; receiptRef.current.click(); }
+  }
+  // 家計簿・今月の支出の帯から＝その日の支出の入力を開いて、すぐ写真を選ぶ（iPhone はタップの中で選ぶ画面を開く必要がある）
+  function startReceipt(dStr) {
+    openDayAdd(dStr || toDateStr(new Date()), "money", true);
+    pickReceipt("add");
+  }
+  async function readReceipt(dataUrl) {
+    const m = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (!m) throw new Error("写真を読み込めませんでした");
+    const content = [
+      { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } },
+      { type: "text", text: `これはレシート・領収書・支払い完了画面・カード利用通知の写真です。家計簿につけるために読み取り、JSONだけ返してください（前置き・説明・コードブロックは不要）。
+- amount：合計金額（税込・円・数字だけ）。小計・消費税・お預かり・お釣り・ポイント・値引き前の金額と取り違えない。読めなければ空文字（推測で作らない）
+- store：店名（読めなければ何の支払いかを短く。それも分からなければ空文字）
+- date：買った日 YYYY-MM-DD（写っている日付だけ。読めなければ空文字。今日は${toDateStr(new Date())}）
+- himoku：次から1つ：${HIMOKU.join("/")}
+- notReceipt：レシート・支払いの写真ではない時だけ true
+{"amount":"","store":"","date":"","himoku":"","notReceipt":false}` },
+    ];
+    let data = await callClaude(IMG_MODEL, content, 400);
+    if (data.error && /model/i.test(data.error.message || "")) data = await callClaude(IMG_MODEL_FALLBACK, content, 400);
+    if (data.error) throw new Error("AIエラー: " + (data.error.message || "キーや残高を確認してください"));
+    const txt = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("").replace(/```json|```/g, "").trim();
+    let r;
+    try { r = JSON.parse(txt); } catch (e) { throw new Error("AIの答えを読めませんでした"); }
+    const amt = parseAmount(r.amount);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.date || "")) && !isNaN(new Date(r.date)) ? r.date : "";
+    return { amount: amt, store: String(r.store || "").trim().slice(0, 40), date, himoku: HIMOKU.includes(r.himoku) ? r.himoku : "", notReceipt: r.notReceipt === true };
+  }
+  async function onReceipt(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const ctx = receiptCtxRef.current;
+    setReceiptMsg(null);
+    let raw;
+    try {
+      raw = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr.readAsDataURL(file); });
+    } catch (err) { setReceiptMsg({ t: "err", s: "写真を読み込めませんでした。もう一度選んでください。" }); return; }
+    const keep = await compressImage(raw);              // カードに付ける写真（いつもの大きさ）
+    if (ctx === "edit") setMoneyEdit(mm => mm ? { ...mm, img: keep, imgNew: true } : mm);
+    else setAddReceipt(keep);
+    if (!apiKey) { setReceiptMsg({ t: "warn", s: "写真は付けました。金額を読むには右上の⚙でAIの設定が要ります（金額は手で入れてください）。" }); return; }
+    setReceiptBusy(ctx);
+    try {
+      const r = await readReceipt(await compressImage(raw, 1100, 0.72));   // 数字を読ませる用＝大きめ・高画質
+      const notes = [];
+      if (r.notReceipt) notes.push("レシート・支払いの写真ではないようです。");
+      if (ctx === "edit") {
+        setMoneyEdit(mm => !mm ? mm : { ...mm, amount: r.amount ? String(r.amount) : mm.amount, himoku: r.himoku || mm.himoku, title: mm.title || r.store, date: r.date || mm.date });
+        if (r.date && moneyEdit && r.date !== moneyEdit.date) notes.push(`買った日をレシートの日付（${+r.date.slice(5, 7)}/${+r.date.slice(8)}）にしました。`);
+      } else {
+        if (r.amount) setAddAmount(String(r.amount));
+        if (r.himoku) setAddHimoku(r.himoku);
+        if (r.store) setAddTitle(r.store);
+        if (r.date && r.date !== addDay) { setAddDay(r.date); setSelDay(r.date); notes.push(`レシートの日付（${+r.date.slice(5, 7)}/${+r.date.slice(8)}）の支出にしました。`); }
+      }
+      if (!r.amount) notes.push("金額が読めませんでした。金額の欄に入れてください。");
+      setReceiptMsg(r.amount && !r.notReceipt
+        ? { t: "ok", s: `読み取りました：${fmtYen(r.amount)}${r.store ? "・" + r.store : ""}${r.himoku ? "・" + r.himoku : ""}。違っていたら直してから入れてください。` + (notes.length ? "\n" + notes.join("\n") : "") }
+        : { t: "warn", s: notes.join("\n") });
+    } catch (err) {
+      setReceiptMsg({ t: "err", s: `読み取れませんでした（${(err && err.message) || err}）。写真は付けたので、金額は手で入れてください。` });
+    } finally { setReceiptBusy(""); }
   }
 
   // ── 予定への添付（写真/URL/ファイル）。作成中(mode:new)＝addAtts、既存(mode:existing,id)＝item.attachments ──
@@ -1759,6 +2270,7 @@ ${imgInstruction}
       if (!amt) return;
       const item = { id: nextId.current++, category: "money", title: addTitle.trim() || addHimoku, amount: amt, himoku: addHimoku,
         date: addDay, chip: fmtYen(amt), meta: addHimoku, added: toDateStr(new Date()) };
+      if (addReceipt) item._img = addReceipt;            // レシートの写真（カード・家計簿で見られる）
       setItems(prev => [item, ...prev]);
       setSelDay(addDay);
       resetAddForm();
@@ -1794,6 +2306,10 @@ ${imgInstruction}
     if (!result) return;
     const item = { id: nextId.current++, ...result };
     item.title = (result.title || "").trim() || "（題名なし）"; // 結果画面で題名を直せる
+    const aiCat = item._aiCat;
+    delete item._aiCat; delete item._learned;
+    // AIの仕分けを選び直して入れた＝直した例として覚える（似た物は次からそのタブへ）
+    if (aiCat && aiCat !== item.category && CATS[item.category]) saveCatConf(learnAdd(catConf, item, aiCat, item.category));
     if (Array.isArray(item.ingredients)) item.ingredients = item.ingredients.map(g => ({ ...g, have: false }));
     // AIが読み取った/ユーザーが直した「いつ・どこ」を予定フィールドに確定
     if (result.category==="event"||result.category==="task") {
@@ -1802,6 +2318,8 @@ ${imgInstruction}
       if (result.category==="event" && resultEnd) item.endTime = resultEnd; else delete item.endTime;
     } else { delete item.time; delete item.endTime; }
     if (resultPlace) item.place = resultPlace; else delete item.place;
+    // 住所＝地図のピンを正確に立てるため（行ってみたい・予定だけ）
+    if (resultAddr.trim() && (item.category === "basho" || item.category === "event")) item.addr = resultAddr.trim(); else delete item.addr;
     if (item.category === "money") {
       // 支出＝金額・費目・買った日を確定。写真だけの時に自動で付く「Googleで調べる」はレシートには要らない
       const amt = parseAmount(resultAmount);
@@ -1816,7 +2334,7 @@ ${imgInstruction}
     if (pendingGeoRef.current) item.geo = pendingGeoRef.current; // 撮った場所（アルバム逆引き用）
     setItems(prev => [item, ...prev]);
     setResult(null); setInput(""); setImage(null); setSheet(false);
-    setResultDate(toDateStr(new Date())); setResultTime(""); setResultEnd(""); setResultPlace(""); setResultAmount(""); setResultHimoku("その他");
+    setResultDate(toDateStr(new Date())); setResultTime(""); setResultEnd(""); setResultPlace(""); setResultAddr(""); setResultAmount(""); setResultHimoku("その他");
     pendingGeoRef.current = null; setPendingPlace("");
   }
   function handleImageSearch(e, item) {
@@ -1846,6 +2364,38 @@ ${imgInstruction}
   function removeItem(id) {
     setItems(prev => prev.filter(it => it.id !== id));
     setMenuId(null);
+  }
+  // 画面の下に数秒だけ出す知らせ（元に戻すつき）
+  function showToast(s, undo) {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ s, undo });
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }
+  // 別のタブへ移す＝直した例として覚える（似た系統は次からAIがそのタブへ入れる）。元に戻すと覚えた例も戻す
+  function moveCard(id, to, newTab) {
+    const it = (items || []).find(x => x.id === id);
+    if (!it || !to) return;
+    const from = it.category, prevConf = catConf;
+    let conf = newTab ? { ...catConf, custom: [...catConf.custom, newTab] } : catConf;
+    if (from !== to) conf = learnAdd(conf, it, from, to);
+    if (conf !== catConf) saveCatConf(conf);           // 新しいタブは CATS に入ってから移す
+    if (from !== to) changeCat(id, to);
+    setMoveId(null); setMoveNew(""); setMenuId(null);
+    if (from === to) return;
+    const label = catOf(to).label;
+    showToast(`「${label}」へ移しました。似た物は次から「${label}」に入れます`, () => {
+      setItems(prev => prev.map(x => x.id === id ? { ...x, category: from } : x));
+      saveCatConf(prevConf);
+      setToast(null);
+    });
+  }
+  function moveToNewTab(id) {
+    const name = moveNew.trim().slice(0, 12);
+    if (!name) return;
+    const used = new Set(catConf.custom.map(t => t.pal));
+    const pal = [...CUSTOM_PAL.keys()].find(i => !used.has(i)) ?? catConf.custom.length % CUSTOM_PAL.length;
+    const tab = { key: "c_" + Date.now().toString(36), label: name, pal };
+    moveCard(id, tab.key, tab);
   }
 
   // ── レシピの材料 ──
@@ -2186,6 +2736,7 @@ ${imgInstruction}
                         <span style={S.kakeiBannerTitle}>今月の支出 {fmtYen(monthMoney.reduce((a, it) => a + (it.amount || 0), 0))}</span>
                         <span style={S.kakeiBannerSub}>{monthMoney.length}件・家計簿を開く</span>
                       </span>
+                      <span style={S.kakeiReceiptPill} onClick={e=>{ e.stopPropagation(); startReceipt(toDateStr(today)); }}>📷 レシート</span>
                       <span style={S.kakeiBannerChev}>›</span>
                     </div>
                   )}
@@ -2378,7 +2929,8 @@ ${imgInstruction}
           </div>
         </div>
         <div style={S.tabs}>
-          {[["all","すべて","#16161e"], ...catKeys().map(k => [k, CATS[k].label, CATS[k].dot])].map(([c,l,col])=>(
+          {/* 家計簿は「すべて」のすぐ隣＝横にずらさなくても見える（2026-10-20② 拓也さん「ホームに家計簿って入れて」） */}
+          {[["all","すべて","#16161e"], ...["money", ...catKeys().filter(k => k !== "money")].map(k => [k, CATS[k].label, CATS[k].dot])].map(([c,l,col])=>(
             <div key={c} onClick={()=>setFilter(c)}
               style={{...S.tab, ...(filter===c?{...S.tabOn, background: c==="all"?"linear-gradient(120deg,#16161e,#3a3a4e)":CATS[c]?CATS[c].grad:"#16161e"}:{})}}>
               <span style={{...S.tabDot, background: filter===c?"#fff":col}}/>
@@ -2399,6 +2951,7 @@ ${imgInstruction}
                 <span style={S.kakeiBannerTitle}>今月の支出 {fmtYen(tot)}</span>
                 <span style={S.kakeiBannerSub}>家計簿を開く（費目別・日ごと）</span>
               </span>
+              <span style={S.kakeiReceiptPill} onClick={e=>{ e.stopPropagation(); startReceipt(toDateStr(today)); }}>📷 レシート</span>
               <span style={S.kakeiBannerChev}>›</span>
             </div>
           );
@@ -2446,7 +2999,7 @@ ${imgInstruction}
                       </div>
                     )}
                     {it.category === "basho" && (
-                      <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent([it.title, it.meta].filter(Boolean).join(" "))}`}
+                      <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(it.mapPin ? `${it.mapPin.lat},${it.mapPin.lng}` : (it.addr || it.place || [it.title, it.meta].filter(Boolean).join(" ")))}`}
                          target="_blank" rel="noopener noreferrer"
                          style={S.cardMapBtn} onClick={e=>e.stopPropagation()}>
                         📍 地図で行く
@@ -2485,12 +3038,12 @@ ${imgInstruction}
                     <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openEdit(it)}>✎ 題名・写真を編集</div>
                     {it.category === "recipe" && <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openRecipe(it.id)}>🧺 材料を見る</div>}
                     {isMoney(it) && <div style={{...S.menuItem, fontWeight:800}} onClick={()=>openMoneyEdit(it)}>💴 金額・費目を直す</div>}
-                    <div style={S.menuHint}>分類を変える</div>
-                    {Object.entries(CATS).map(([k,v])=>(
-                      <div key={k} style={{...S.menuItem, ...(k===it.category?{opacity:0.4}:{})}} onClick={()=>changeCat(it.id,k)}>
-                        <span style={{...S.tabDot, background:v.dot}}/>{v.label}{k===it.category && " ✓"}
-                      </div>
-                    ))}
+                    {/* 別のタブへ移す＝大きく選べるシートで（タブが増えるとここに並べきれない）。移した例はAIが覚える */}
+                    <div style={S.menuMove} onClick={()=>{ setMenuId(null); setMoveNew(""); setMoveId(it.id); }}>
+                      <span style={{...S.tabDot, width:9, height:9, background:c.dot}}/>
+                      <span style={{flex:1}}>別のタブへ移す<span style={S.menuMoveNow}>今：{c.label}</span></span>
+                      <span style={{fontSize:16, opacity:0.6}}>›</span>
+                    </div>
                     <div style={S.menuDel} onClick={()=>{ if(window.confirm('このカードを削除しますか？')) removeItem(it.id); }}>🗑 削除する</div>
                   </div>
                 )}
@@ -2504,37 +3057,101 @@ ${imgInstruction}
         {view==="category" && (
           <div style={S.catGridWrap}>
             {(() => {
-              const nonEmpty = Object.keys(CATS).filter(k => (items||[]).some(it => it.category===k));
-              if (nonEmpty.length===0) return (
-                <div style={S.wallEmpty}><div style={S.wallEmptyEmoji}>🗂️</div><div style={S.wallEmptyTitle}>まだ空っぽ</div><div style={S.wallEmptyText}>放り込むと、ここに分類別で並びます。</div></div>
-              );
+              // 2026-10-20 拓也さん「分類のページが何のタブか見にくい、UIをかっこよく整えて」。
+              // 前＝タブ名が下の淡い帯に小さく・写真の無いマスは似た色のグラデで埋まり、どのタブも同じに見えた。
+              // 今＝タブ名を表紙の上に大きく白で（写真の上は下から暗くして読ませる）・タブごとの色を表紙の縁と名前の前の印に・
+              //   写真は1枚大きく＋2枚小さく（Pinterest のボードと同じ並べ方）・写真が無いタブは色の面にタブ名だけ大きく。
+              //   自分で作ったタブは空でも出す（作ったのに見えないと迷う）。最後に「＋ タブを作る」。
+              // 家計簿は一番上に横長のカードで常に出す（2026-10-20② 拓也さん「分類のところに家計簿って入れて」）＝下の並びには入れない
+              const shown = catKeys().filter(k => k !== "money" && ((items||[]).some(it => it.category===k) || k.startsWith("c_")));
+              const total = (items||[]).length;
+              const mon = toDateStr(today).slice(0, 7);
+              const mList = (items||[]).filter(it => isMoney(it) && (it.date || "").startsWith(mon));
+              const mTot = mList.reduce((a, it) => a + (it.amount || 0), 0);
+              const byH = {};
+              for (const it of mList) byH[it.himoku || "その他"] = (byH[it.himoku || "その他"] || 0) + (it.amount || 0);
+              const topH = Object.entries(byH).sort((a, b) => b[1] - a[1]).slice(0, 3);
               return (
-                <div style={S.catGrid}>
-                  {nonEmpty.map(k => {
-                    const c = CATS[k];
-                    const list = (items||[]).filter(it => it.category===k);
-                    const photos = list.filter(it => coverOf(it)).slice(0,4);
-                    const tiles = Array.from({length:4}, (_,i) => photos[i] || null);
-                    return (
-                      <div key={k} style={S.catCard} onClick={()=>{ setFilter(k); setView("cards"); }}>
-                        <div style={S.catCover}>
-                          <div style={S.catCoverInner}>
-                            {tiles.map((t,i) => t
-                              ? <img key={i} src={coverOf(t)} alt="" style={S.catCoverImg} onError={e=>{e.target.style.visibility='hidden';}} />
-                              : <div key={i} style={{...S.catCoverTile, background:c.grad, opacity:[0.92,0.78,0.85,0.72][i]}} />
-                            )}
+                <>
+                  <div style={S.catHead}>
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={S.catHeadTitle}>分類</div>
+                      <div style={S.catHeadSub}>{total}件・タブ{shown.length + 1}個</div>
+                    </div>
+                    <span style={S.catHeadBtn} onClick={openTabEdit}>＋ タブ</span>
+                  </div>
+                  {/* 家計簿（今月の合計・費目の上位3つ）。タップ＝その月の家計簿／📷＝レシートを撮る／カードで見る＝ホームで支出のカードだけ */}
+                  <div style={S.kakeiCard} onClick={()=>setKakeiMonth(mon)}>
+                    <div style={S.kakeiCardTop}>
+                      <span style={S.kakeiCardName}>💴 {CATS.money.label}</span>
+                      <span style={S.kakeiCardMon}>{+mon.slice(5)}月</span>
+                    </div>
+                    <div style={S.kakeiCardTot}>{fmtYen(mTot)}<span style={S.kakeiCardCnt}>{mList.length}件</span></div>
+                    {topH.length ? (
+                      <div style={S.kakeiCardBars}>
+                        {topH.map(([h, v]) => (
+                          <div key={h} style={S.kakeiCardBarRow}>
+                            <span style={S.kakeiCardBarLbl}>{h}</span>
+                            <span style={S.kakeiCardBarTrack}><span style={{...S.kakeiCardBarFill, width:`${Math.max(4, Math.round(v / (mTot || 1) * 100))}%`}}/></span>
+                            <span style={S.kakeiCardBarVal}>{fmtYen(v)}</span>
                           </div>
-                          <span style={S.catCoverCount}>{list.length}</span>
-                        </div>
-                        <div style={S.catCardFoot}>
-                          <span style={{...S.tabDot, background:c.dot, flexShrink:0}}/>
-                          <span style={S.catCardName}>{c.label}</span>
-                          <span style={S.catCardChev}>›</span>
-                        </div>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
+                    ) : (
+                      <div style={S.kakeiCardEmpty}>今月の支出はまだありません。レシートを撮るだけで、金額・お店・費目が入ります。</div>
+                    )}
+                    <div style={S.kakeiCardFoot}>
+                      <span style={S.kakeiCardPill} onClick={e=>{ e.stopPropagation(); startReceipt(toDateStr(today)); }}>📷 レシート</span>
+                      <span style={S.kakeiCardGhost} onClick={e=>{ e.stopPropagation(); setFilter("money"); setView("cards"); }}>カードで見る</span>
+                      <span style={{flex:1}}/>
+                      <span style={S.kakeiCardOpen}>費目別・日ごと ›</span>
+                    </div>
+                  </div>
+                  {shown.length===0 ? (
+                    <div style={S.wallEmpty}><div style={S.wallEmptyEmoji}>🗂️</div><div style={S.wallEmptyTitle}>まだ空っぽ</div><div style={S.wallEmptyText}>放り込むと、ここに分類別で並びます。</div></div>
+                  ) : (
+                    <div style={S.catGrid}>
+                      {shown.map(k => {
+                        const c = CATS[k];
+                        const list = (items||[]).filter(it => it.category===k);
+                        const photos = list.filter(it => coverOf(it)).slice(0,3);
+                        const img = (t, st) => <img src={coverOf(t)} alt="" style={st} onError={e=>{e.target.style.visibility='hidden';}} />;
+                        return (
+                          <div key={k} style={{...S.catCard, ...(list.length ? {} : S.catCardEmpty)}} onClick={()=>{ setFilter(k); setView("cards"); }}>
+                            <div style={{...S.catCover, background:c.grad, boxShadow:`inset 0 0 0 2px ${c.dot}`}}>
+                              {photos.length >= 3 ? (
+                                <div style={S.catMosaic}>
+                                  {img(photos[0], {...S.catCoverImg, gridRow:"1 / span 2"})}
+                                  {img(photos[1], S.catCoverImg)}
+                                  {img(photos[2], S.catCoverImg)}
+                                </div>
+                              ) : photos.length >= 1 ? (
+                                <div style={S.catMosaic1}>{img(photos[0], S.catCoverImg)}</div>
+                              ) : (
+                                <div style={S.catSheen}/>
+                              )}
+                              <div style={photos.length ? S.catScrim : S.catScrimLight}/>
+                              <span style={S.catCoverCount}>{list.length}</span>
+                              <div style={S.catCoverName}>
+                                {photos.length > 0 && <span style={{...S.catCoverDot, background:c.dot}}/>}
+                                <span style={{...S.catCoverLabel, ...(photos.length ? {} : {fontSize:21})}}>{c.label}</span>
+                              </div>
+                            </div>
+                            <div style={S.catCardFoot}>
+                              <span style={S.catCardLatest}>{list.length ? `最新：${list[0].title}` : "まだ空っぽ"}</span>
+                              <span style={S.catCardChev}>›</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div style={S.catAddCard} onClick={openTabEdit}>
+                        <span style={S.catAddPlus}>＋</span>
+                        <span style={S.catAddText}>タブを作る</span>
+                        <span style={S.catAddSub}>例：カメラ・推し活・子どものもの</span>
+                      </div>
+                    </div>
+                  )}
+                </>
               );
             })()}
           </div>
@@ -2569,13 +3186,29 @@ ${imgInstruction}
           setAddType("event");
           setAddTitle(it.title);
           setAddTime(""); setAddEndTime(""); setAddAllDay(false); setAddRemind("none");
-        }} onFixLocation={(id, coord)=>{
-          // 「地名を指定」で解決した座標を手動ピンとして保存（items更新→line492のeffectでIDBへ永続化）
-          setItems(prev => prev.map(it => it.id===id ? { ...it, mapPin: coord } : it));
+        }} onFixLocation={(id, pin)=>{
+          // 候補から選んだ／地図をタップした場所を手動ピンとして保存（items更新→IndexedDBへ）。元に戻せる
+          const before = (items || []).find(it => it.id === id);
+          if (!before) return;
+          setItems(prev => prev.map(it => it.id===id ? { ...it, mapPin: pin } : it));
+          showToast(`「${before.title}」の場所を決めました`, () => {
+            setItems(prev => prev.map(it => { if (it.id !== id) return it; const n = { ...it }; if (before.mapPin) n.mapPin = before.mapPin; else delete n.mapPin; return n; }));
+            setToast(null);
+          });
+        }} onAddPlace={(c)=>{
+          // 地図で探した場所をそのまま「行ってみたい」へ（場所は選んだ所に固定）
+          const id = nextId.current++;
+          const title = String(c.name || "地図で選んだ場所").slice(0, 40);
+          const area = String(c.sub || "").split(" ").filter(Boolean).slice(0, 2).join(" ");
+          setItems(prev => [{ id, category: "basho", title, meta: c.tapped ? "" : area, chip: "行きたい", ...(c.tapped ? {} : { place: title }),
+            mapPin: { lat: c.lat, lng: c.lng, ...(c.tapped ? {} : { name: title, sub: c.sub || "" }) }, added: toDateStr(new Date()) }, ...prev]);
+          showToast(`「${title}」を「${catOf("basho").label}」に入れました`, () => { setItems(prev => prev.filter(it => it.id !== id)); setToast(null); });
+          return id;
         }} />}
 
         <input ref={attImgRef} type="file" accept="image/*" style={{display:"none"}} onChange={onAttImg} />
         <input ref={attFileRef} type="file" style={{display:"none"}} onChange={onAttFile} />
+        <input ref={receiptRef} type="file" accept="image/*" style={{display:"none"}} onChange={onReceipt} />
 
         {/* 放り込む＝タブ列を割らずにバーの上へ浮かせて中央配置（タブの切替を明確に保ったまま、放り込むは主役のまま） */}
         <div style={S.fabDock}>
@@ -2628,6 +3261,15 @@ ${imgInstruction}
               </div>
               {addType === "money" ? (
                 <>
+                  {/* レシートの写真＝撮る・選ぶ→AIが金額・店・日付・費目を下の欄に入れる（入れる前に直せる） */}
+                  <div style={S.receiptRow}>
+                    {addReceipt && <img src={addReceipt} alt="レシート" style={S.receiptThumb} onClick={()=>setLightbox(addReceipt)} />}
+                    <div style={{...S.receiptBtn, ...(receiptBusy==="add"?{opacity:0.6, pointerEvents:"none"}:{})}} onClick={()=>pickReceipt("add")}>
+                      {receiptBusy==="add" ? "レシートを読み取り中…" : addReceipt ? "📷 レシートを撮り直す" : "📷 レシートを撮る・選ぶ"}
+                      {!receiptBusy && !addReceipt && <span style={S.receiptBtnSub}>金額・お店・日付をAIが読みます</span>}
+                    </div>
+                  </div>
+                  {receiptMsg && receiptCtxRef.current === "add" && <div style={receiptMsg.t === "ok" ? S.receiptOk : {...S.ingWarn, whiteSpace:"pre-line"}}>{receiptMsg.s}</div>}
                   <div style={S.moneyRow}>
                     <span style={S.moneyYen}>¥</span>
                     <input ref={addAmountRef} style={S.moneyInput} inputMode="numeric" placeholder="いくら？" value={addAmount}
@@ -2704,8 +3346,8 @@ ${imgInstruction}
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setAddDay(null)}>やめる</button>
                 {(() => {
-                  const ng = addType === "money" ? !parseAmount(addAmount) : !addTitle.trim();
-                  return <button style={{...S.btnMain, ...(ng?{opacity:0.5}:{})}} onClick={confirmDayAdd} disabled={ng}>この日に追加 ✓</button>;
+                  const ng = addType === "money" ? (!parseAmount(addAmount) || receiptBusy === "add") : !addTitle.trim();
+                  return <button style={{...S.btnMain, ...(ng?{opacity:0.5}:{})}} onClick={confirmDayAdd} disabled={ng}>{receiptBusy === "add" ? "読み取り中…" : "この日に追加 ✓"}</button>;
                 })()}
               </div>
               {addRemind !== "none" && <div style={S.remindNote}>※通知は「アプリを開いている/開いた時」に出ます。閉じてても鳴る通知は今後サーバー対応で実装予定。</div>}
@@ -2784,7 +3426,7 @@ ${imgInstruction}
                           <a href={it.sourceUrl} target="_blank" rel="noopener noreferrer" style={S.hitBtn}>🔗 開く</a>
                         )}
                         {it.category === "basho" && (
-                          <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent([it.title, it.meta].filter(Boolean).join(" "))}`}
+                          <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(it.mapPin ? `${it.mapPin.lat},${it.mapPin.lng}` : (it.addr || it.place || [it.title, it.meta].filter(Boolean).join(" ")))}`}
                              target="_blank" rel="noopener noreferrer" style={{...S.hitBtn, background:"rgba(47,216,122,0.16)", color:"#1aa85c"}}>📍 地図で行く</a>
                         )}
                         {it.date
@@ -2969,6 +3611,23 @@ ${imgInstruction}
                       </div>
                       <input type="text" placeholder="会場・店名・住所（あれば）" style={{...S.dateInput,...(result.place?{borderColor:"#22c55e"}:{})}}
                         value={resultPlace} onChange={e=>setResultPlace(e.target.value)} />
+                      {result.category==="event" && (
+                        <input type="text" placeholder="住所（あれば・地図のピンが正確になります）" style={{...S.dateInput,...(result.addr?{borderColor:"#22c55e"}:{})}}
+                          value={resultAddr} onChange={e=>setResultAddr(e.target.value)} />
+                      )}
+                    </>
+                  )}
+                  {/* 行ってみたい＝地図にピンを立てる。店名（支店まで）と住所があると正確に置ける（2026-10-20） */}
+                  {result.category==="basho" && (
+                    <>
+                      <div style={S.fieldLabel}>
+                        地図に出す場所
+                        {(result.place || result.addr) && <span style={{marginLeft:6,fontSize:10,color:"#22c55e",fontWeight:700}}>✓ AIが読み取り済み</span>}
+                      </div>
+                      <input type="text" placeholder="店名・施設名（支店名まで・例：一蘭 渋谷店）" style={{...S.dateInput,...(result.place?{borderColor:"#22c55e"}:{})}}
+                        value={resultPlace} onChange={e=>setResultPlace(e.target.value)} />
+                      <input type="text" placeholder="住所（あれば）" style={{...S.dateInput,...(result.addr?{borderColor:"#22c55e"}:{})}}
+                        value={resultAddr} onChange={e=>setResultAddr(e.target.value)} />
                     </>
                   )}
                   {/* 支出（レシート）＝保存する前に金額・費目・日付を確かめて直せる（競合の家計簿アプリも保存前に確認を挟む） */}
@@ -3005,7 +3664,10 @@ ${imgInstruction}
                       <span style={S.resultGoUrl}>{String(result.link).replace(/^https?:\/\/(www\.)?/,"").slice(0,38)}</span>
                     </a>
                   )}
-                  <div style={S.reclassLabel}>違ったら選び直す</div>
+                  {result._learned && result.category === result._aiCat && (
+                    <div style={S.learnedNote}>前に「{catOf(result.category).label}」へ移した「{result._learned}」に近いので、ここに入れました</div>
+                  )}
+                  <div style={S.reclassLabel}>違ったら選び直す（直すとAIが覚えます）</div>
                   <div style={S.reclass}>
                     {Object.entries(CATS).map(([k,v])=>(
                       <div key={k} onClick={()=>setResult({...result, category:k})}
@@ -3351,6 +4013,7 @@ ${imgInstruction}
                         <div style={S.kakeiDayHead}><span>{mdw(d)}</span><span>{fmtYen(its.reduce((a, it) => a + (it.amount || 0), 0))}</span></div>
                         {its.map(it => (
                           <div key={it.id} style={S.kakeiRow} onClick={()=>openMoneyEdit(it)}>
+                            {it._img ? <img src={it._img} alt="" style={S.kakeiRowImg} /> : <span style={S.kakeiRowImgNone}/>}
                             <span style={S.kakeiRowTitle}>{it.title}</span>
                             <span style={S.kakeiRowHim}>{it.himoku || "その他"}</span>
                             <span style={{...S.kakeiRowAmt, ...(it.amount ? {} : {color:"#d97706"})}}>{it.amount ? fmtYen(it.amount) : "金額なし"}</span>
@@ -3360,13 +4023,22 @@ ${imgInstruction}
                     ))}
                   </>
                 )}
-                <div style={S.sheetBtns}>
-                  <button style={S.btnGhost} onClick={()=>setKakeiMonth(null)}>閉じる</button>
-                  <button style={S.btnMain} onClick={()=>{
-                    const d = kakeiMonth === toDateStr(today).slice(0, 7) ? toDateStr(today) : kakeiMonth + "-01";
-                    setKakeiMonth(null); openDayAdd(d, "money");
-                  }}>＋ 支出を手で入れる</button>
-                </div>
+                {(() => {
+                  const d = kakeiMonth === toDateStr(today).slice(0, 7) ? toDateStr(today) : kakeiMonth + "-01";
+                  return (
+                    <>
+                      <div style={S.kakeiReceiptBtn} onClick={()=>{ setKakeiMonth(null); startReceipt(d); }}>
+                        <span style={S.kakeiReceiptIc}>📷</span>
+                        <span style={{flex:1}}><b style={{display:"block", fontSize:15}}>レシートで入れる</b><span style={{fontSize:11.5, opacity:0.85}}>金額・お店・日付をAIが読みます</span></span>
+                        <span style={{fontSize:20, fontWeight:700}}>›</span>
+                      </div>
+                      <div style={S.sheetBtns}>
+                        <button style={S.btnGhost} onClick={()=>setKakeiMonth(null)}>閉じる</button>
+                        <button style={S.btnMain} onClick={()=>{ setKakeiMonth(null); openDayAdd(d, "money"); }}>＋ 手で入れる</button>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           );
@@ -3378,6 +4050,13 @@ ${imgInstruction}
             <div style={S.sheet} onClick={e=>e.stopPropagation()}>
               <div style={S.sheetGrip}/>
               <div style={S.sheetTitle}>💴 支出を直す</div>
+              <div style={S.receiptRow}>
+                {moneyEdit.img && <img src={moneyEdit.img} alt="レシート" style={S.receiptThumb} onClick={()=>setLightbox(moneyEdit.img)} />}
+                <div style={{...S.receiptBtn, ...(receiptBusy==="edit"?{opacity:0.6, pointerEvents:"none"}:{})}} onClick={()=>pickReceipt("edit")}>
+                  {receiptBusy==="edit" ? "レシートを読み取り中…" : moneyEdit.img ? "📷 レシートを撮り直して読む" : "📷 レシートを付けて読む"}
+                </div>
+              </div>
+              {receiptMsg && receiptCtxRef.current === "edit" && <div style={receiptMsg.t === "ok" ? S.receiptOk : {...S.ingWarn, whiteSpace:"pre-line"}}>{receiptMsg.s}</div>}
               <div style={{...S.moneyRow, ...(parseAmount(moneyEdit.amount)?{}:{borderColor:"#f59e0b"})}}>
                 <span style={S.moneyYen}>¥</span>
                 <input style={S.moneyInput} inputMode="numeric" placeholder="いくら？" value={moneyEdit.amount}
@@ -3393,10 +4072,59 @@ ${imgInstruction}
               <input type="date" style={S.dateInput} value={moneyEdit.date} onChange={e=>setMoneyEdit({...moneyEdit, date:e.target.value})} />
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setMoneyEdit(null)}>閉じる</button>
-                <button style={{...S.btnMain, ...(parseAmount(moneyEdit.amount)?{}:{opacity:0.5})}} onClick={saveMoneyEdit} disabled={!parseAmount(moneyEdit.amount)}>直す ✓</button>
+                <button style={{...S.btnMain, ...(parseAmount(moneyEdit.amount) && receiptBusy !== "edit"?{}:{opacity:0.5})}} onClick={saveMoneyEdit} disabled={!parseAmount(moneyEdit.amount) || receiptBusy === "edit"}>{receiptBusy === "edit" ? "読み取り中…" : "直す ✓"}</button>
               </div>
               <div style={S.moneyDel} onClick={()=>{ if (window.confirm("この支出を消しますか？")) { removeItem(moneyEdit.id); setMoneyEdit(null); } }}>🗑 この支出を消す</div>
             </div>
+          </div>
+        )}
+
+        {/* 別のタブへ移す（カードの ⋮ から）。タップで移す＝AIが「直した例」として覚え、似た系統は次からそのタブへ入れる */}
+        {moveId !== null && (() => {
+          const it = (items || []).find(x => x.id === moveId);
+          if (!it) return null;
+          const counts = {};
+          (items || []).forEach(x => { counts[x.category] = (counts[x.category] || 0) + 1; });
+          return (
+            <div style={S.sheetWrap} onClick={()=>setMoveId(null)}>
+              <div style={S.sheet} onClick={e=>e.stopPropagation()}>
+                <div style={S.sheetGrip}/>
+                <div style={S.sheetTitle}>別のタブへ移す</div>
+                <div style={S.moveWhat}>
+                  {coverOf(it) ? <img src={coverOf(it)} alt="" style={S.moveWhatImg} /> : <span style={{...S.moveWhatImg, background:catOf(it.category).grad}}/>}
+                  <span style={{flex:1, minWidth:0}}>
+                    <span style={S.moveWhatTitle}>{it.title}</span>
+                    <span style={S.moveWhatNow}>今：{catOf(it.category).label}</span>
+                  </span>
+                </div>
+                <div style={S.moveGrid}>
+                  {catKeys().map(k => {
+                    const v = CATS[k], here = k === it.category;
+                    return (
+                      <div key={k} style={{...S.moveTab, ...(here ? S.moveTabHere : {})}} onClick={()=>{ if (!here) moveCard(it.id, k); }}>
+                        <span style={{...S.moveTabSw, background:v.grad}}/>
+                        <span style={S.moveTabName}>{v.label}</span>
+                        <span style={S.moveTabCount}>{here ? "今ここ" : `${counts[k] || 0}件`}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={S.fieldLabel}>新しいタブを作って移す</div>
+                <div style={S.moveNewRow}>
+                  <input style={{...S.dateInput, flex:1, marginBottom:0, fontSize:16}} placeholder="新しいタブの名前" value={moveNew} maxLength={12}
+                    onChange={e=>setMoveNew(e.target.value)} onKeyDown={e=>{ if (e.key === "Enter") moveToNewTab(it.id); }} />
+                  <button style={{...S.moveNewBtn, ...(moveNew.trim()?{}:{opacity:0.45})}} disabled={!moveNew.trim()} onClick={()=>moveToNewTab(it.id)}>作って移す</button>
+                </div>
+                <div style={S.moveNote}>移すと、AIがこの仕分けを覚えます。似た系統の物は、次から放り込むだけでそのタブに入ります（箱に入れる前の画面で選び直せます・覚えた仕分けは「＋ タブ」の画面で消せます）。</div>
+                <div style={S.sheetBtns}><button style={S.btnGhost} onClick={()=>setMoveId(null)}>やめる</button></div>
+              </div>
+            </div>
+          );
+        })()}
+        {toast && (
+          <div style={S.toast}>
+            <span style={{flex:1}}>{toast.s}</span>
+            {toast.undo && <span style={S.toastUndo} onClick={toast.undo}>元に戻す</span>}
           </div>
         )}
 
@@ -3445,6 +4173,21 @@ ${imgInstruction}
                   )}
                 </div>
               ))}
+              {/* AIが覚えた仕分け（別のタブへ移した例）。間違って覚えた物はここで消せる */}
+              <div style={{...S.fieldLabel, display:"flex", alignItems:"center"}}>
+                <span style={{flex:1}}>AIが覚えた仕分け（{(tabEdit.learn || []).length}件）</span>
+                {(tabEdit.learn || []).length > 0 && <span style={S.tabEditReset} onClick={()=>setTabEdit({...tabEdit, learn: []})}>全部消す</span>}
+              </div>
+              {(tabEdit.learn || []).length === 0
+                ? <div style={S.tabEditEmpty}>カードを ⋮ →「別のタブへ移す」で移すと、ここに覚えます。似た系統の物は次からそのタブに入ります。</div>
+                : (tabEdit.learn || []).map((x, i) => (
+                  <div key={x.t + i} style={S.learnRow}>
+                    <span style={S.learnT}>{x.t}</span>
+                    <span style={S.learnArrow}>→</span>
+                    <span style={{...S.learnTo, background:catOf(x.to).chip, color:catOf(x.to).chipC}}>{catOf(x.to).label}</span>
+                    <span style={S.learnDel} onClick={()=>setTabEdit({...tabEdit, learn: tabEdit.learn.filter((_, j) => j !== i)})}>✕</span>
+                  </div>
+                ))}
               <div style={S.sheetBtns}>
                 <button style={S.btnGhost} onClick={()=>setTabEdit(null)}>やめる</button>
                 <button style={S.btnMain} onClick={saveTabEdit}>保存する</button>
@@ -3661,17 +4404,70 @@ const S = {
   viewTabIc: { fontSize:14 },
   // ── 分類別ビュー ──
   // ── 分類別＝Apple写真アプリのアルバム風カード ──
-  catGridWrap: { padding:"6px 16px 150px" },
-  catGrid: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 },
-  catCard: { background:"#fff", borderRadius:22, overflow:"hidden", border:"1px solid rgba(0,0,0,0.05)", boxShadow:"0 8px 22px rgba(20,20,40,0.07)", cursor:"pointer", WebkitTapHighlightColor:"transparent" },
-  catCover: { position:"relative", width:"100%", paddingTop:"100%", background:"#eef0f4" },
-  catCoverInner: { position:"absolute", inset:0, display:"grid", gridTemplateColumns:"1fr 1fr", gridTemplateRows:"1fr 1fr", gap:2 },
-  catCoverImg: { width:"100%", height:"100%", objectFit:"cover" },
-  catCoverTile: { width:"100%", height:"100%" },
-  catCoverCount: { position:"absolute", top:8, right:8, minWidth:20, height:20, padding:"0 6px", borderRadius:100, background:"rgba(0,0,0,0.42)", backdropFilter:"blur(8px)", color:"#fff", fontSize:11.5, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" },
-  catCardFoot: { padding:"11px 12px 13px", display:"flex", alignItems:"center", gap:7 },
+  catGridWrap: { padding:"2px 16px 150px" },
+  catHead: { display:"flex", alignItems:"flex-end", gap:10, padding:"4px 4px 14px" },
+  catHeadTitle: { fontSize:28, fontWeight:800, color:"#17132B", letterSpacing:"-0.03em", lineHeight:1.1 },
+  catHeadSub: { fontSize:12, fontWeight:700, color:"#5A5476", marginTop:3 },
+  catHeadBtn: { flexShrink:0, fontSize:13, fontWeight:800, color:"#5B2FD0", padding:"9px 14px", borderRadius:100, background:"rgba(255,255,255,0.7)", border:"1px solid rgba(255,255,255,0.9)", boxShadow:"inset 1px 1px 0 #fff, 0 4px 12px -6px rgba(60,40,120,0.35)", cursor:"pointer", whiteSpace:"nowrap" },
+  catGrid: { display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:14 },
+  catCard: { background:"#fff", borderRadius:24, overflow:"hidden", border:"1px solid rgba(0,0,0,0.05)", boxShadow:"0 8px 22px rgba(20,20,40,0.07)", cursor:"pointer", WebkitTapHighlightColor:"transparent", padding:6 },
+  catCardEmpty: { opacity:0.86 },
+  // 表紙：タブの色の面（写真があれば上に敷く）＋縁にタブの色＋左下にタブ名を大きく白で
+  catCover: { position:"relative", width:"100%", paddingTop:"100%", borderRadius:19, overflow:"hidden" },
+  catMosaic: { position:"absolute", inset:0, display:"grid", gridTemplateColumns:"1.35fr 1fr", gridTemplateRows:"1fr 1fr", gap:2 },
+  catMosaic1: { position:"absolute", inset:0, display:"flex" },
+  catCoverImg: { width:"100%", height:"100%", objectFit:"cover", display:"block", minWidth:0, minHeight:0 },
+  catSheen: { position:"absolute", inset:0, background:"radial-gradient(120% 90% at 0% 0%,rgba(255,255,255,0.45),rgba(255,255,255,0) 55%), radial-gradient(90% 80% at 100% 100%,rgba(0,0,0,0.18),rgba(0,0,0,0) 60%)" },
+  catScrim: { position:"absolute", left:0, right:0, bottom:0, height:"62%", background:"linear-gradient(to top,rgba(10,8,24,0.78),rgba(10,8,24,0.35) 55%,rgba(10,8,24,0))", pointerEvents:"none" },
+  catScrimLight: { position:"absolute", left:0, right:0, bottom:0, height:"50%", background:"linear-gradient(to top,rgba(10,8,24,0.28),rgba(10,8,24,0))", pointerEvents:"none" },
+  catCoverCount: { position:"absolute", top:8, right:8, minWidth:24, height:24, padding:"0 8px", borderRadius:100, background:"rgba(0,0,0,0.38)", backdropFilter:"blur(10px)", WebkitBackdropFilter:"blur(10px)", border:"1px solid rgba(255,255,255,0.35)", color:"#fff", fontSize:12.5, fontWeight:800, display:"flex", alignItems:"center", justifyContent:"center" },
+  catCoverName: { position:"absolute", left:11, right:10, bottom:10, display:"flex", alignItems:"center", gap:7 },
+  catCoverDot: { width:10, height:10, borderRadius:"50%", flexShrink:0, boxShadow:"0 0 0 2px rgba(255,255,255,0.95)" },
+  catCoverLabel: { fontSize:19, fontWeight:800, color:"#fff", letterSpacing:"-0.02em", lineHeight:1.15, textShadow:"0 1px 2px rgba(0,0,0,0.45), 0 2px 10px rgba(0,0,0,0.25)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 },
+  catCardFoot: { padding:"8px 6px 4px", display:"flex", alignItems:"center", gap:6 },
+  catCardLatest: { flex:1, minWidth:0, fontSize:11.5, fontWeight:600, color:"#4A4566", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
   catCardName: { flex:1, fontSize:14, fontWeight:800, color:"#1c1c26", letterSpacing:"-0.01em", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
-  catCardChev: { fontSize:18, fontWeight:700, color:"#c6c6d0", marginTop:-2, flexShrink:0 },
+  catCardChev: { fontSize:18, fontWeight:700, color:"#a8a4be", marginTop:-2, flexShrink:0 },
+  catAddCard: { borderRadius:24, border:"1.5px dashed rgba(91,47,208,0.35)", background:"rgba(255,255,255,0.35)", minHeight:150, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:4, padding:12, cursor:"pointer", textAlign:"center" },
+  catAddPlus: { width:44, height:44, borderRadius:22, display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, fontWeight:700, color:"#fff", background:"linear-gradient(135deg,rgba(122,66,236,0.96),rgba(88,116,248,0.93))", boxShadow:"0 6px 16px -4px rgba(110,70,230,0.55)", marginBottom:4 },
+  catAddText: { fontSize:14, fontWeight:800, color:"#3D2A8A" },
+  catAddSub: { fontSize:10.5, fontWeight:600, color:"#6E6890" },
+  // ── 別のタブへ移す（⋮→シート）・知らせ ──
+  menuMove: { display:"flex", alignItems:"center", gap:9, padding:"12px 12px", borderRadius:12, fontSize:13.5, fontWeight:800, color:"#2A2540", cursor:"pointer", background:"rgba(139,84,245,0.09)", border:"1px solid rgba(139,84,245,0.18)", marginTop:4 },
+  menuMoveNow: { display:"block", fontSize:10.5, fontWeight:700, color:"#7a7590", marginTop:1 },
+  moveWhat: { display:"flex", alignItems:"center", gap:10, padding:"10px", borderRadius:16, background:"rgba(255,255,255,0.7)", border:"1px solid rgba(0,0,0,0.05)", marginBottom:12 },
+  moveWhatImg: { width:46, height:46, borderRadius:12, objectFit:"cover", flexShrink:0, display:"block" },
+  moveWhatTitle: { display:"block", fontSize:14, fontWeight:800, color:"#17132B", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  moveWhatNow: { display:"block", fontSize:11, fontWeight:700, color:"#7a7590", marginTop:2 },
+  moveGrid: { display:"grid", gridTemplateColumns:"repeat(3,minmax(0,1fr))", gap:8 },
+  moveTab: { display:"flex", flexDirection:"column", alignItems:"flex-start", gap:5, padding:"10px 10px 9px", borderRadius:16, background:"#fff", border:"1px solid rgba(0,0,0,0.06)", boxShadow:"0 3px 10px -6px rgba(40,30,80,0.3)", cursor:"pointer", minWidth:0 },
+  moveTabHere: { opacity:0.45, cursor:"default", boxShadow:"none", borderStyle:"dashed" },
+  moveTabSw: { width:26, height:26, borderRadius:9, boxShadow:"inset 1px 1px 0 rgba(255,255,255,0.5)" },
+  moveTabName: { fontSize:13, fontWeight:800, color:"#17132B", lineHeight:1.2, width:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  moveTabCount: { fontSize:10.5, fontWeight:700, color:"#8a86a0" },
+  moveNewRow: { display:"flex", gap:8, alignItems:"center" },
+  moveNewBtn: { flexShrink:0, height:46, padding:"0 14px", borderRadius:14, border:"none", background:"linear-gradient(120deg,#16161e,#34344a)", color:"#fff", fontSize:13, fontWeight:800, cursor:"pointer" },
+  moveNote: { fontSize:11.5, lineHeight:1.6, color:"#5A5476", background:"rgba(139,84,245,0.07)", borderRadius:12, padding:"9px 11px", marginTop:12 },
+  toast: { position:"fixed", left:16, right:16, maxWidth:420, margin:"0 auto", bottom:"calc(160px + env(safe-area-inset-bottom))", zIndex:1500, display:"flex", alignItems:"center", gap:10, padding:"12px 14px", borderRadius:18, background:"rgba(22,20,38,0.9)", backdropFilter:"blur(14px)", WebkitBackdropFilter:"blur(14px)", color:"#fff", fontSize:12.5, fontWeight:700, lineHeight:1.5, boxShadow:"0 12px 30px -10px rgba(0,0,0,0.5)" },
+  toastUndo: { flexShrink:0, fontSize:12.5, fontWeight:800, color:"#C9B8FF", padding:"6px 10px", borderRadius:10, background:"rgba(255,255,255,0.12)", cursor:"pointer", whiteSpace:"nowrap" },
+  // ── AIが覚えた仕分け ──
+  learnRow: { display:"flex", alignItems:"center", gap:7, padding:"7px 2px", borderTop:"1px solid rgba(0,0,0,0.05)" },
+  learnT: { flex:1, minWidth:0, fontSize:12.5, fontWeight:600, color:"#1a1a24", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  learnArrow: { fontSize:12, color:"#a0a0ac", flexShrink:0 },
+  learnTo: { fontSize:11, fontWeight:800, borderRadius:100, padding:"3px 9px", flexShrink:0, whiteSpace:"nowrap", maxWidth:110, overflow:"hidden", textOverflow:"ellipsis" },
+  learnDel: { fontSize:13, color:"#b0b0bc", padding:"2px 6px", cursor:"pointer", flexShrink:0 },
+  learnedNote: { fontSize:11.5, fontWeight:700, lineHeight:1.55, color:"#4A2BB0", background:"rgba(139,84,245,0.09)", border:"1px solid rgba(139,84,245,0.2)", borderRadius:12, padding:"8px 11px", marginBottom:10 },
+  // ── レシートの写真 ──
+  receiptRow: { display:"flex", alignItems:"stretch", gap:10, marginBottom:10 },
+  receiptThumb: { width:56, height:70, borderRadius:12, objectFit:"cover", flexShrink:0, border:"1px solid rgba(0,0,0,0.08)", cursor:"zoom-in" },
+  receiptBtn: { flex:1, minHeight:52, borderRadius:16, border:"1.5px dashed #d9bf7c", background:"rgba(230,189,82,0.12)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2, fontSize:14, fontWeight:800, color:"#7A5A0E", cursor:"pointer", padding:"8px 10px", textAlign:"center" },
+  receiptBtnSub: { fontSize:10.5, fontWeight:600, color:"#8a7550" },
+  receiptOk: { fontSize:11.5, lineHeight:1.6, color:"#14532d", background:"rgba(34,197,94,0.12)", border:"1px solid rgba(34,197,94,0.3)", borderRadius:12, padding:"9px 11px", marginBottom:8, whiteSpace:"pre-line" },
+  kakeiReceiptBtn: { display:"flex", alignItems:"center", gap:12, marginTop:16, padding:"13px 14px", borderRadius:18, color:"#fff", background:"linear-gradient(135deg,#d9a93a,#a8740f)", boxShadow:"inset 1px 1px 0 rgba(255,255,255,0.4), 0 10px 22px -10px rgba(168,116,15,0.8)", cursor:"pointer" },
+  kakeiReceiptIc: { fontSize:24, flexShrink:0 },
+  kakeiReceiptPill: { flexShrink:0, fontSize:11.5, fontWeight:800, color:"#fff", padding:"7px 10px", borderRadius:100, background:"linear-gradient(135deg,#d9a93a,#a8740f)", boxShadow:"inset 1px 1px 0 rgba(255,255,255,0.4)", cursor:"pointer", whiteSpace:"nowrap" },
+  kakeiRowImg: { width:26, height:32, borderRadius:6, objectFit:"cover", flexShrink:0, border:"1px solid rgba(0,0,0,0.08)" },
+  kakeiRowImgNone: { width:26, flexShrink:0 },
   catViewWrap: { padding:"0 18px 150px" },
   catSec: { marginBottom:18 },
   catSecHead: { display:"flex", alignItems:"center", gap:8, padding:"0 2px 8px" },
@@ -3691,20 +4487,43 @@ const S = {
   albumCellImg: { position:"absolute", top:0, left:0, width:"100%", height:"100%", objectFit:"cover" },
   albumCellPlace: { position:"absolute", left:4, bottom:4, right:4, fontSize:9.5, fontWeight:700, color:"#fff", background:"rgba(0,0,0,0.42)", borderRadius:7, padding:"2px 5px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
   // ── 自分だけの地図ビュー ──
-  mapBox: { height:"62vh", minHeight:340, borderRadius:16, overflow:"hidden", border:"1px solid rgba(0,0,0,0.06)", zIndex:0 },
+  mapBox: { height:"48vh", minHeight:300, borderRadius:16, overflow:"hidden", border:"1px solid rgba(0,0,0,0.06)", zIndex:0 },
   mapLoading: { position:"absolute", top:14, left:"50%", transform:"translateX(-50%)", background:"rgba(22,22,30,0.88)", color:"#fff", fontSize:12, fontWeight:700, padding:"7px 14px", borderRadius:100, zIndex:500, whiteSpace:"nowrap" },
-  mapEmpty: { position:"absolute", left:16, right:16, top:0, height:"62vh", minHeight:340, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", textAlign:"center", padding:"0 30px", background:"rgba(248,248,252,0.9)", borderRadius:16, zIndex:400 },
+  mapEmpty: { position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", textAlign:"center", padding:"0 30px", background:"rgba(248,248,252,0.9)", borderRadius:16, zIndex:400 },
   mapEmptyEmoji: { fontSize:40, marginBottom:10 },
   mapEmptyTitle: { fontSize:15, fontWeight:800, color:"#2a2a34", marginBottom:6 },
   mapEmptyText: { fontSize:12.5, color:"#8a8a96", lineHeight:1.7 },
-  mapFailWrap: { marginTop:12, background:"rgba(255,246,238,0.92)", border:"1px solid rgba(240,150,90,0.28)", borderRadius:14, padding:"12px 14px" },
-  mapFailHead: { fontSize:13, fontWeight:800, color:"#b5581f" },
-  mapFailNote: { fontSize:11.5, color:"#a07a63", marginTop:3, marginBottom:6, lineHeight:1.6 },
-  mapFailRow: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, padding:"8px 0", borderTop:"1px solid rgba(240,150,90,0.16)" },
-  mapFailTitle: { fontSize:13, fontWeight:700, color:"#3a3a44", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
-  mapFailBtns: { display:"flex", gap:8, flexShrink:0, alignItems:"center" },
-  mapFailLink: { fontSize:12, color:"#2b6cb0", textDecoration:"none", whiteSpace:"nowrap" },
-  mapFailFix: { fontSize:12, fontWeight:700, border:"none", background:"#16161e", color:"#fff", borderRadius:8, padding:"6px 11px", cursor:"pointer", whiteSpace:"nowrap" },
+  // 地図の検索・候補の窓（2026-10-20）
+  mapSearch: { display:"flex", alignItems:"center", gap:6, padding:"5px 5px 5px 12px", borderRadius:16, background:"rgba(255,255,255,0.82)", border:"1px solid rgba(0,0,0,0.06)", boxShadow:"0 4px 14px rgba(20,20,40,0.06)", marginBottom:10 },
+  mapSearchIcon: { fontSize:14, opacity:0.55, flexShrink:0 },
+  mapSearchInput: { flex:1, minWidth:0, border:"none", outline:"none", background:"transparent", fontSize:16, color:"#16161e", height:38, WebkitAppearance:"none", appearance:"none" },
+  mapSearchClear: { flexShrink:0, fontSize:13, color:"#9a9aa6", padding:"8px 6px", cursor:"pointer" },
+  mapSearchBtn: { flexShrink:0, height:38, padding:"0 15px", borderRadius:12, border:"none", background:"linear-gradient(120deg,#16161e,#34344a)", color:"#fff", fontSize:13, fontWeight:800, cursor:"pointer" },
+  mapFixBar: { display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:14, background:"linear-gradient(120deg,rgba(47,216,122,0.18),rgba(31,200,176,0.12))", border:"1px solid rgba(26,168,92,0.35)", marginBottom:8 },
+  mapFixLabel: { fontSize:11, fontWeight:800, color:"#1a8a52", letterSpacing:"0.02em" },
+  mapFixTitle: { fontSize:14, fontWeight:800, color:"#12623a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", marginTop:1 },
+  mapFixSub: { fontSize:11.5, color:"#3f7a5a", marginTop:2, lineHeight:1.6 },
+  mapFixLink: { color:"#2b6cb0", textDecoration:"none", fontWeight:700, whiteSpace:"nowrap" },
+  mapFixCancel: { flexShrink:0, fontSize:12, fontWeight:800, color:"#3a3a44", background:"#fff", border:"1px solid #e2e2ea", borderRadius:10, padding:"8px 12px", cursor:"pointer" },
+  mapErr: { marginTop:10, fontSize:12, color:"#b5581f", background:"rgba(255,246,238,0.92)", border:"1px solid rgba(240,150,90,0.28)", borderRadius:12, padding:"9px 12px", lineHeight:1.6 },
+  mapPanel: { marginTop:12, borderRadius:18, background:"rgba(255,255,255,0.8)", border:"1px solid rgba(0,0,0,0.05)", boxShadow:"0 8px 22px rgba(20,20,40,0.07)", overflow:"hidden" },
+  mapPanelHead: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"12px 14px 8px", fontSize:13, fontWeight:800, color:"#2a2a34" },
+  mapPanelClose: { flexShrink:0, fontSize:12, fontWeight:700, color:"#8a8a96", cursor:"pointer", padding:"4px 2px" },
+  mapPanelScroll: { maxHeight:"40vh", overflowY:"auto", WebkitOverflowScrolling:"touch", overscrollBehavior:"contain", padding:"0 6px 6px" },
+  mapSecHead: { fontSize:11, fontWeight:800, color:"#9a9aa6", letterSpacing:"0.04em", padding:"8px 8px 4px" },
+  mapRow: { display:"flex", alignItems:"center", gap:10, padding:"10px 8px", borderRadius:12, cursor:"pointer", borderTop:"1px solid rgba(0,0,0,0.04)" },
+  mapRowOn: { background:"rgba(22,22,30,0.07)" },
+  mapRowDot: { width:10, height:10, borderRadius:"50%", flexShrink:0 },
+  mapRowPin: { fontSize:15, flexShrink:0, width:18, textAlign:"center" },
+  mapRowText: { flex:1, minWidth:0, display:"flex", flexDirection:"column", gap:2 },
+  mapRowTitle: { fontSize:13.5, fontWeight:700, color:"#22222c", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  mapRowSub: { fontSize:11.5, color:"#8a8a96", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  mapBadgeNone: { flexShrink:0, fontSize:11, fontWeight:800, color:"#b5581f", background:"rgba(240,150,90,0.16)", borderRadius:100, padding:"3px 8px", whiteSpace:"nowrap" },
+  mapBadgeApprox: { flexShrink:0, fontSize:11, fontWeight:800, color:"#8a6510", background:"rgba(201,154,46,0.16)", borderRadius:100, padding:"3px 8px", whiteSpace:"nowrap" },
+  mapRowBtn: { flexShrink:0, fontSize:12, fontWeight:800, color:"#3a3a44", background:"#fff", border:"1px solid #e2e2ea", borderRadius:10, padding:"7px 10px", cursor:"pointer", whiteSpace:"nowrap" },
+  mapRowBtnMain: { flexShrink:0, fontSize:12, fontWeight:800, color:"#fff", background:"linear-gradient(120deg,#16161e,#34344a)", borderRadius:10, padding:"8px 11px", cursor:"pointer", whiteSpace:"nowrap" },
+  mapPanelEmpty: { fontSize:12.5, color:"#8a8a96", lineHeight:1.7, padding:"6px 10px 12px" },
+  mapCredit: { fontSize:11, color:"#a0a0ac", padding:"6px 14px 10px", lineHeight:1.5 },
   tabs: { display:"flex", gap:6, padding:"0 20px 12px", overflowX:"auto" },
   tab: { display:"flex", alignItems:"center", gap:6, padding:"7px 12px", borderRadius:100, background:"rgba(255,255,255,0.65)", backdropFilter:"blur(20px)", border:"1px solid rgba(255,255,255,0.8)", cursor:"pointer", whiteSpace:"nowrap", flexShrink:0 },
   tabOn: { transform:"scale(1.04)", borderColor:"transparent" },
@@ -3889,6 +4708,24 @@ const S = {
   // 家計簿（2026-10-20）
   daySpend: { fontSize:8.5, fontWeight:800, color:"#8a6510", height:10, lineHeight:"10px", letterSpacing:"-0.02em", whiteSpace:"nowrap" },
   kakeiBanner: { display:"flex", alignItems:"center", gap:10, margin:"2px 0 10px", padding:"10px 12px", borderRadius:14, background:"linear-gradient(120deg,rgba(230,189,82,0.2),rgba(184,134,27,0.12))", border:"1px solid rgba(184,134,27,0.3)", cursor:"pointer" },
+  // 分類ページの家計簿カード（2026-10-20②）＝横長・金色
+  kakeiCard: { position:"relative", margin:"0 0 14px", padding:"14px 16px 12px", borderRadius:24, background:"linear-gradient(140deg,#f1cf6e 0%,#d6a43a 55%,#a8740f 100%)", boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.5), 0 14px 30px -14px rgba(140,95,10,0.7)", color:"#fff", cursor:"pointer", overflow:"hidden", WebkitTapHighlightColor:"transparent" },
+  kakeiCardTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 },
+  kakeiCardName: { fontSize:20, fontWeight:900, letterSpacing:"-0.01em", textShadow:"0 1px 2px rgba(90,60,0,0.35)" },
+  kakeiCardMon: { fontSize:12, fontWeight:800, padding:"4px 10px", borderRadius:100, background:"rgba(255,255,255,0.25)", border:"1px solid rgba(255,255,255,0.45)" },
+  kakeiCardTot: { fontSize:28, fontWeight:900, letterSpacing:"-0.02em", marginTop:4, textShadow:"0 1px 2px rgba(90,60,0,0.3)", fontVariantNumeric:"tabular-nums" },
+  kakeiCardCnt: { fontSize:12, fontWeight:700, marginLeft:8, opacity:0.9 },
+  kakeiCardBars: { display:"flex", flexDirection:"column", gap:5, marginTop:8 },
+  kakeiCardBarRow: { display:"flex", alignItems:"center", gap:8, fontSize:12, fontWeight:700 },
+  kakeiCardBarLbl: { width:66, flexShrink:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  kakeiCardBarTrack: { flex:1, height:7, borderRadius:7, background:"rgba(255,255,255,0.28)", overflow:"hidden" },
+  kakeiCardBarFill: { display:"block", height:"100%", borderRadius:7, background:"#fff" },
+  kakeiCardBarVal: { flexShrink:0, minWidth:64, textAlign:"right", fontVariantNumeric:"tabular-nums" },
+  kakeiCardEmpty: { fontSize:12.5, fontWeight:600, lineHeight:1.6, marginTop:6, opacity:0.95 },
+  kakeiCardFoot: { display:"flex", alignItems:"center", gap:8, marginTop:12 },
+  kakeiCardPill: { fontSize:12.5, fontWeight:800, color:"#8a5a00", background:"#fff", padding:"8px 12px", borderRadius:100, boxShadow:"0 3px 10px -4px rgba(90,60,0,0.5)", whiteSpace:"nowrap", cursor:"pointer" },
+  kakeiCardGhost: { fontSize:12, fontWeight:800, color:"#fff", padding:"7px 11px", borderRadius:100, border:"1px solid rgba(255,255,255,0.6)", background:"rgba(255,255,255,0.14)", whiteSpace:"nowrap", cursor:"pointer" },
+  kakeiCardOpen: { fontSize:12, fontWeight:800, opacity:0.95, whiteSpace:"nowrap" },
   kakeiBannerTitle: { display:"block", fontSize:13, fontWeight:800, color:"#7A5A0E" },
   kakeiBannerSub: { display:"block", fontSize:10.5, color:"#8a7550", marginTop:1 },
   kakeiBannerChev: { fontSize:18, fontWeight:700, color:"#b8963e", flexShrink:0 },
@@ -4092,6 +4929,8 @@ function lgStage({ sky, orbs, edge }) {
     cardMenuBtn: { ...S.cardMenuBtn, ...lgClearDark },
     expandBadge: { ...S.expandBadge, ...lgClearDark },
     catCard: { ...S.catCard, ...lgGlass(0.4, 20) },
+    mapSearch: { ...S.mapSearch, ...lgGlass(0.62, 20), borderRadius:18 },
+    mapPanel: { ...S.mapPanel, ...lgGlass(0.55, 22), borderRadius:22 },
     navBar: { ...S.navBar, ...lgGlass(0.62, 30), left:12, right:12, bottom:"calc(12px + env(safe-area-inset-bottom))", height:66, borderRadius:33, paddingBottom:0 },
     navItem: { ...S.navItem, color:"#3A3554", margin:"6px 4px", borderRadius:27 },
     navItemOn: { color:"#fff", background:"linear-gradient(135deg,rgba(122,66,236,0.96),rgba(88,116,248,0.93))", boxShadow:"inset 1.5px 1.5px 0 rgba(255,255,255,0.55), inset -1px -1px 0 rgba(255,255,255,0.2), 0 6px 16px -4px rgba(110,70,230,0.55)" },
